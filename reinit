@@ -1,0 +1,4 @@
+#!/bin/bash
+rm -rf lower/*
+rm -rf lower/.git
+(cd lower; git init; git config user.email 'pipcet@gmail.com'; git config user.name 'Pip Cet')
