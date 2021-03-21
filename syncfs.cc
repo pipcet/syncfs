@@ -75,15 +75,17 @@ class FIFO {
 public:
   int infd;
   int outfd;
-  FIFO(int infd, int outfd) : infd (infd), outfd (outfd) {}
+  Json::StreamWriter *swriter;
+  FIFO(int infd, int outfd) : infd (infd), outfd (outfd) {
+    Json::StreamWriterBuilder swb;
+    swb["indentation"] = "";
+    swriter = swb.newStreamWriter();
+  }
   ~FIFO() { close (infd); close (outfd); }
 
   void request(std::string type, Path path, size_t size = 0)
   {
     fuse_context *context = fuse_get_context();
-    Json::StreamWriterBuilder swb;
-    swb["indentation"] = "";
-    Json::StreamWriter *swriter = swb.newStreamWriter();
     Json::Value val(Json::objectValue);
     val["command"] = Json::Value(type.c_str());
     val["path"] = Json::Value(path.c_str());
@@ -134,7 +136,7 @@ static int fd_from_inode(fuse_ino_t ino)
   return (int) ino;
 }
 
-static int fuse_getattr(const char *path_str,
+static int syncfs_getattr(const char *path_str,
 			struct stat *statp,
 			fuse_file_info* fi_may_be_null)
 {
@@ -150,7 +152,7 @@ static int fuse_getattr(const char *path_str,
   }
 }
 
-static int fuse_readlink(const char *path_str, char *buf, size_t size)
+static int syncfs_readlink(const char *path_str, char *buf, size_t size)
 {
   try {
     Path path(path_str);
@@ -166,7 +168,7 @@ static int fuse_readlink(const char *path_str, char *buf, size_t size)
   }
 }
 
-static int fuse_mkdir(const char *path_str, mode_t mode)
+static int syncfs_mkdir(const char *path_str, mode_t mode)
 {
   try {
     Path path(path_str);
@@ -180,7 +182,7 @@ static int fuse_mkdir(const char *path_str, mode_t mode)
   }
 }
 
-static int fuse_rmdir(const char *path_str)
+static int syncfs_rmdir(const char *path_str)
 {
   try {
     Path path(path_str);
@@ -192,7 +194,7 @@ static int fuse_rmdir(const char *path_str)
   }
 }
 
-static int fuse_unlink(const char *path_str)
+static int syncfs_unlink(const char *path_str)
 {
   try {
     Path path(path_str);
@@ -221,7 +223,7 @@ static bool is_symlink(Path path)
   }
 }
 
-static int fuse_chmod(const char *path_str, mode_t mode,
+static int syncfs_chmod(const char *path_str, mode_t mode,
 		      fuse_file_info *fi)
 {
   try {
@@ -237,7 +239,7 @@ static int fuse_chmod(const char *path_str, mode_t mode,
   }
 }
 
-static int fuse_chown(const char *path_str, uid_t uid, gid_t gid,
+static int syncfs_chown(const char *path_str, uid_t uid, gid_t gid,
 		      fuse_file_info *fi)
 {
   try {
@@ -253,7 +255,7 @@ static int fuse_chown(const char *path_str, uid_t uid, gid_t gid,
   }
 }
 
-static int fuse_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
+static int syncfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
 			off_t offset, fuse_file_info *, enum fuse_readdir_flags)
 {
     Path path(path_str);
@@ -277,7 +279,7 @@ static int fuse_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
   return 0;
 }
 
-static int fuse_create(const char *path_str, mode_t mode, fuse_file_info *fi)
+static int syncfs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
 {
   try {
     Path path(path_str);
@@ -295,7 +297,7 @@ static int fuse_create(const char *path_str, mode_t mode, fuse_file_info *fi)
   }
 }
 
-static int fuse_open(const char *path_str, fuse_file_info *fi)
+static int syncfs_open(const char *path_str, fuse_file_info *fi)
 {
     Path path(path_str);
   int fd = ::openat(root_fd, path.c_str(), fi->flags);
@@ -305,7 +307,7 @@ static int fuse_open(const char *path_str, fuse_file_info *fi)
   return 0;
 }
 
-static int fuse_utimens(const char *path_str, const struct timespec tv[2],
+static int syncfs_utimens(const char *path_str, const struct timespec tv[2],
 			struct fuse_file_info *fi)
 {
   Path path(path_str);
@@ -317,7 +319,7 @@ static int fuse_utimens(const char *path_str, const struct timespec tv[2],
   return 0;
 }
 
-static int fuse_fsync(const char *path_str, int datasync,
+static int syncfs_fsync(const char *path_str, int datasync,
 		      struct fuse_file_info *fi)
 {
   try {
@@ -330,7 +332,7 @@ static int fuse_fsync(const char *path_str, int datasync,
   }
 }
 
-static int fuse_setxattr(const char *path_str, const char *name,
+static int syncfs_setxattr(const char *path_str, const char *name,
 			 const char *value, size_t size, int flags)
 {
   try {
@@ -355,7 +357,7 @@ static int fuse_setxattr(const char *path_str, const char *name,
   }
 }
 
-static int fuse_removexattr(const char *path_str, const char *name)
+static int syncfs_removexattr(const char *path_str, const char *name)
 {
   try {
     Path path(path_str);
@@ -379,7 +381,7 @@ static int fuse_removexattr(const char *path_str, const char *name)
   }
 }
 
-static int fuse_getxattr(const char *path_str, const char *name,
+static int syncfs_getxattr(const char *path_str, const char *name,
 			 char *value, size_t size)
 {
   try {
@@ -404,7 +406,7 @@ static int fuse_getxattr(const char *path_str, const char *name,
   }
 }
 
-static int fuse_listxattr(const char *path_str, char *buf, size_t size)
+static int syncfs_listxattr(const char *path_str, char *buf, size_t size)
 {
   try {
     Path path(path_str);
@@ -453,7 +455,7 @@ static int fuse_listxattr(const char *path_str, char *buf, size_t size)
   }
 }
 
-static int fuse_fsyncdir(const char *path_str, int datasync,
+static int syncfs_fsyncdir(const char *path_str, int datasync,
 			 struct fuse_file_info *fi)
 {
   try {
@@ -466,7 +468,7 @@ static int fuse_fsyncdir(const char *path_str, int datasync,
   }
 }
 
-static int fuse_read_buf(const char *path_str, struct fuse_bufvec **out_buf,
+static int syncfs_read_buf(const char *path_str, struct fuse_bufvec **out_buf,
 			 size_t size, off_t off, fuse_file_info *fi)
 {
   try {
@@ -487,7 +489,7 @@ static int fuse_read_buf(const char *path_str, struct fuse_bufvec **out_buf,
   }
 }
 
-static int fuse_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
+static int syncfs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
 			  off_t off, fuse_file_info *fi)
 {
   try {
@@ -510,13 +512,13 @@ static int fuse_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
   }
 }
 
-static int fuse_release(const char *path_str, fuse_file_info *fi)
+static int syncfs_release(const char *path_str, fuse_file_info *fi)
 {
   ::close (fi->fh);
   return 0;
 }
 
-static int fuse_symlink(const char *target, const char *path_str)
+static int syncfs_symlink(const char *target, const char *path_str)
 {
   try {
     Path path(path_str);
@@ -529,7 +531,7 @@ static int fuse_symlink(const char *target, const char *path_str)
   }
 }
 
-static int fuse_link(const char *path1, const char *path_str)
+static int syncfs_link(const char *path1, const char *path_str)
 {
   try {
     Path path(path_str);
@@ -545,7 +547,7 @@ static int fuse_link(const char *path1, const char *path_str)
   }
 }
 
-static int fuse_rename(const char *path_str, const char *path2_str,
+static int syncfs_rename(const char *path_str, const char *path2_str,
 		       unsigned int flags)
 {
   try {
@@ -566,29 +568,29 @@ static int fuse_rename(const char *path_str, const char *path2_str,
   }
 }
 
-static struct fuse_operations fuse_operations = {
-  .getattr = fuse_getattr,
-  .readlink = fuse_readlink,
-  .mkdir = fuse_mkdir,
-  .unlink = fuse_unlink,
-  .rmdir = fuse_rmdir,
-  .symlink = fuse_symlink,
-  .rename = fuse_rename,
-  .link = fuse_link,
-  .chmod = fuse_chmod,
-  .chown = fuse_chown,
-  .open = fuse_open,
-  .fsync = fuse_fsync,
-  .setxattr = fuse_setxattr,
-  .getxattr = fuse_getxattr,
-  .listxattr = fuse_listxattr,
-  .removexattr = fuse_removexattr,
-  .readdir = fuse_readdir,
-  .fsyncdir = fuse_fsyncdir,
-  .create = fuse_create,
-  .utimens = fuse_utimens,
-  .write_buf = fuse_write_buf,
-  .read_buf = fuse_read_buf,
+static struct fuse_operations syncfs_operations = {
+  .getattr = syncfs_getattr,
+  .readlink = syncfs_readlink,
+  .mkdir = syncfs_mkdir,
+  .unlink = syncfs_unlink,
+  .rmdir = syncfs_rmdir,
+  .symlink = syncfs_symlink,
+  .rename = syncfs_rename,
+  .link = syncfs_link,
+  .chmod = syncfs_chmod,
+  .chown = syncfs_chown,
+  .open = syncfs_open,
+  .fsync = syncfs_fsync,
+  .setxattr = syncfs_setxattr,
+  .getxattr = syncfs_getxattr,
+  .listxattr = syncfs_listxattr,
+  .removexattr = syncfs_removexattr,
+  .readdir = syncfs_readdir,
+  .fsyncdir = syncfs_fsyncdir,
+  .create = syncfs_create,
+  .utimens = syncfs_utimens,
+  .write_buf = syncfs_write_buf,
+  .read_buf = syncfs_read_buf,
 };
 
 int main(int argc, char **argv)
@@ -599,7 +601,6 @@ int main(int argc, char **argv)
   int fifo_out_fd = open(fifo_out_name, O_RDONLY);
   FIFO *fifo = new FIFO(fifo_in_fd, fifo_out_fd);
   int lower_fd = open(argv[1], O_RDONLY|O_PATH);
-  root_path = strdup(argv[1]);
   if (lower_fd < 0)
     abort();
   root_fd = lower_fd;
@@ -617,7 +618,7 @@ int main(int argc, char **argv)
     abort();
   //if (fuse_opt_add_arg(&args, "-odebug"))
   //  abort();
-  fuse *fuse = fuse_new (&args, &fuse_operations, sizeof(fuse_operations),
+  fuse *fuse = fuse_new (&args, &syncfs_operations, sizeof(syncfs_operations),
 			 fifo);
   fuse_mount(fuse, argv[2]);
 
