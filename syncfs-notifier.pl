@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 use AE;
 use AnyEvent;
+use AnyEvent::Handle;
 use IPC::Run qw(run);
 
 my $fifo = shift;
@@ -21,3 +22,5 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	    };
 			    });
     });
+
+AnyEvent->condvar->recv;

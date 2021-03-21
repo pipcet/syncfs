@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 package SyncFSFile;
 
+use Data::Dumper;
+
 sub new {
     my $class = shift;
     my $path = shift;
@@ -10,19 +12,23 @@ sub new {
 
 sub touch {
     my ($self, $h, $done) = @_;
+    warn Dumper($h);
     $self->{time} = time;
     if ($h->{command} eq "write" and !$done) {
 	$self->{modbytes} += $h->{size} + length $h->{path};
 	$self->{edited_by}->{$h->{user}}++;
 	my $cmdline = $h->{cmdline}->[0];
 	$self->{cmdlines}->{$cmdline} = $cmdline;
-    } elsif ($h->{command} eq "write" and $done) {
+    } elsif (($h->{command} eq "write") and $done) {
+	warn "set status to written";
 	$self->{status} = "written";
-    } elsif ($h->{command} eq "unlink" and $done) {
+    } elsif (($h->{command} eq "create") and $done) {
+	$self->{status} = "written";
+    } elsif (($h->{command} eq "unlink") and $done) {
 	$self->{status} = "deleted";
-    } elsif ($h->{command} eq "unlink" and !$done) {
+    } elsif (($h->{command} eq "unlink") and !$done) {
 	delete $self->{status};
-    } elsif ($h->{command} eq "rename" and !$done) {
+    } elsif (($h->{command} eq "rename") and !$done) {
 	delete $self->{status};
     }
 }
@@ -33,7 +39,7 @@ sub touch_renamed_to {
     if (!$done) {
 	delete $self->{status};
     } else {
-	$self->{status} = written;
+	$self->{status} = "written";
     }
 }
 
@@ -66,6 +72,7 @@ sub message {
 sub sync {
     my $self = shift;
     $self->{modbytes} = 0;
+    delete $self->{status};
 }
 
 package main;
@@ -78,7 +85,6 @@ use User::pwent;
 use IPC::Run qw(run start);
 use AnyEvent;
 use AnyEvent::Handle;
-use Carp::Always;
 
 my $timer_needed = 0;
 my $fifo = shift;
@@ -141,6 +147,7 @@ sub add_files {
 	$message .= $file->message;
     }
 
+    warn "adding " . @files . " files";
     if (@files) {
 	my $stdin = join("\0", map { $_->path } @files);
 	run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
@@ -175,6 +182,11 @@ sub update_score {
     }
     my $file = $files{$h->{path}};
     $file->touch($h, $done);
+    if (($file->{status} eq "written") and ($file->{cmdlines}->{emacs})) {
+	return 0;
+    } else {
+	return 5;
+    }
 }
 
 sub update_rename_score {
@@ -193,6 +205,8 @@ sub update_rename_score {
 	my $file = $files{$h->{path2}};
 	$file->touch_renamed_to($h, $done);
     }
+
+    return 5;
 }
 
 sub contact_sync_host {
@@ -206,7 +220,7 @@ sub contact_sync_host {
 my $synctime = 0;
 
 my $fh;
-open $fh, "$fifo" or last;
+open $fh, "$fifo" or die;
 my $outfh;
 open $outfh, ">$outfifo" or die;
 my $notifyfh;
@@ -237,43 +251,53 @@ sub check_timer {
     my $time = time;
     if ($time - $timer_last_started > 5) {
 	$timer_needed = 0;
+	$timer_last_started = $time;
 	run_timer;
     } elsif ($time - $timer_last_run > 60) {
 	$timer_needed = 0;
+	$timer_last_started = $time;
 	run_timer;
     }
-    $timer = AE::timer 5, 0, sub { check_timer } if $timer_needed;
+    $timer = AE::timer 5, 0, sub { check_timer };
 }
 
 my $cv = AnyEvent->condvar();
+my $hash;
 my $hdl; $hdl = new AnyEvent::Handle(
     fh => $fh,
     on_read => sub {
-	my $hash;
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
-	    #print $line . "\n";
+	    my $delay;
+	    print $line . "\n";
 	    if ($line ne "") {
 		$hash = Mojo::JSON::decode_json($line);
 		resolve_starid($hash);
 		$outfh->print("\n");
 		$outfh->flush;
 		if ($hash->{command} eq "rename") {
-		    update_rename_score($hash, 0);
+		    $delay = update_rename_score($hash, 0);
 		} else {
-		    update_score($hash, 0);
+		    $delay = update_score($hash, 0);
 		}
 	    } else {
+		warn "DONE";
+		$outfh->print("\n");
+		$outfh->flush;
 		if ($hash->{command} eq "rename") {
-		    update_rename_score($hash, 1);
+		    $delay = update_rename_score($hash, 1);
 		} else {
-		    update_score($hash, 1);
+		    $delay = update_score($hash, 1);
 		}
 	    }
 
-	    check_timer;
-	    $timer = AE::timer 5, 0, sub {
+	    if ($delay == 0) {
+		run_timer;
+	    } else {
 		check_timer;
+		$timer = AE::timer 5, 0, sub {
+		    check_timer;
+		}
 	    }
 			    });
     },

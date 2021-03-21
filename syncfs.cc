@@ -149,6 +149,10 @@ public:
   void request_done()
   {
     write (infd, "\n", 1);
+    char buf[1];
+    ssize_t len = read (outfd, buf, 1);
+    if (len > 0 && buf[0] == '\n')
+      return;
   }
 };
 
@@ -644,10 +648,10 @@ static struct fuse_operations syncfs_operations = {
   .chown = syncfs_chown,
   .open = syncfs_open,
   .fsync = syncfs_fsync,
-  .setxattr = syncfs_setxattr,
-  .getxattr = syncfs_getxattr,
-  .listxattr = syncfs_listxattr,
-  .removexattr = syncfs_removexattr,
+  //.setxattr = syncfs_setxattr,
+  //.getxattr = syncfs_getxattr,
+  //.listxattr = syncfs_listxattr,
+  //.removexattr = syncfs_removexattr,
   .readdir = syncfs_readdir,
   .fsyncdir = syncfs_fsyncdir,
   .create = syncfs_create,
