@@ -166,7 +166,7 @@ sub contact_sync_host {
     my $stdout = "";
     my $stderr = "";
     my $stdin = "";
-    run(["ssh", "$host", "echo", "foo", ">>", "syncfs-pings"], \$stdin, \$stdout, \$stderr);
+    run(["ssh", "$host", "echo", "foo", ">>", "syncfs/syncfs-pings"], \$stdin, \$stdout, \$stderr);
 }
 
 my $synctime = 0;
@@ -179,7 +179,37 @@ my $notifyfh;
 open $notifyfh, ">$notifyfifo" or die;
 chdir "lower";
 
+my $timer_last_run = 0;
+my $timer_running = 0;
+
+sub run_timer {
+    $timer_last_run = time;
+    return if ($timer_running);
+    $timer_running = 1;
+    warn "running timer";
+    add_files();
+    del_files();
+    # contact_sync_host("10.4.0.1");
+    print $notifyfh `pwd`;
+    flush $notifyfh;
+    $timer_running = 0;
+    $timer_last_run = time;
+}
+
+my $timer_last_started = 0;
 my $timer;
+sub check_timer;
+sub check_timer {
+    my $time = time;
+    if ($time - $timer_last_started > 5) {
+	run_timer;
+    } elsif ($time - $timer_last_run > 60) {
+	run_timer;
+    } else {
+	$timer = AE::timer 5, 0, sub { check_timer };
+    }
+}
+
 my $cv = AnyEvent->condvar();
 my $hdl; $hdl = new AnyEvent::Handle(
     fh => $fh,
@@ -197,12 +227,6 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	    $timer->again if $timer;
 		
 	    $timer = AE::timer 5, 0, sub {
-		warn "running timer";
-		add_files();
-		del_files();
-		# contact_sync_host("10.4.0.1");
-		print $notifyfh `pwd`;
-		flush $notifyfh;
 	    };
 			    });
     },
