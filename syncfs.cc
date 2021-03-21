@@ -83,6 +83,24 @@ public:
   }
   ~FIFO() { close (infd); close (outfd); }
 
+  void request0(std::string type, Path path)
+  {
+    fuse_context *context = fuse_get_context();
+    Json::Value val(Json::objectValue);
+    val["command"] = Json::Value(type.c_str());
+    val["path"] = Json::Value(path.c_str());
+    std::ostringstream os;
+    swriter->write(val, &os);
+    os << '\n';
+    write (infd, os.str().c_str(), strlen(os.str().c_str()));
+    char buf[1];
+    ssize_t len = read (outfd, buf, 1);
+    if (len > 0 && buf[0] == '\n')
+      return;
+
+    throw Errno(EIO);
+  }
+
   void request(std::string type, Path path, size_t size = 0)
   {
     fuse_context *context = fuse_get_context();
@@ -95,14 +113,42 @@ public:
     val["gid"] = Json::Value(Json::UInt64(context->gid));
     std::ostringstream os;
     swriter->write(val, &os);
+    os << '\n';
     write (infd, os.str().c_str(), strlen(os.str().c_str()));
-    write (infd, "\n", 1);
-    char buf[4096];
+    char buf[1];
     ssize_t len = read (outfd, buf, 1);
     if (len > 0 && buf[0] == '\n')
       return;
 
     throw Errno(EIO);
+  }
+
+  void request2(std::string type, Path path1, Path path2, size_t size = 0)
+  {
+    fuse_context *context = fuse_get_context();
+    Json::Value val(Json::objectValue);
+    val["command"] = Json::Value(type.c_str());
+    val["path1"] = Json::Value(path1.c_str());
+    val["path2"] = Json::Value(path2.c_str());
+    val["size"] = Json::Value(Json::UInt64(size));
+    val["pid"] = Json::Value(Json::UInt64(context->pid));
+    val["uid"] = Json::Value(Json::UInt64(context->uid));
+    val["gid"] = Json::Value(Json::UInt64(context->gid));
+    std::ostringstream os;
+    swriter->write(val, &os);
+    os << '\n';
+    write (infd, os.str().c_str(), strlen(os.str().c_str()));
+    char buf[1];
+    ssize_t len = read (outfd, buf, 1);
+    if (len > 0 && buf[0] == '\n')
+      return;
+
+    throw Errno(EIO);
+  }
+
+  void request_done()
+  {
+    write (infd, "\n", 1);
   }
 };
 
@@ -172,10 +218,13 @@ static int syncfs_mkdir(const char *path_str, mode_t mode)
 {
   try {
     Path path(path_str);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     mode |= S_IFDIR;
+    fifo->request("mkdir", path, strlen(path.c_str()));
     int ret = ::mkdirat(root_fd, path.c_str(), mode);
     if (ret < 0)
       throw Errno();
+    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -186,8 +235,11 @@ static int syncfs_rmdir(const char *path_str)
 {
   try {
     Path path(path_str);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("rmdir", path, strlen(path.c_str()));
     if (::unlinkat(root_fd, path.c_str(), AT_REMOVEDIR) < 0)
       throw Errno();
+    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -200,10 +252,10 @@ static int syncfs_unlink(const char *path_str)
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
-    fifo->request("pre-unlink", path, size);
+    fifo->request("unlink", path, size);
     if (::unlinkat(root_fd, path.c_str(), 0) < 0)
       throw Errno();
-    fifo->request("post-unlink", path, size);
+    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -285,12 +337,12 @@ static int syncfs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
-    fifo->request("pre-create", path, size);
+    fifo->request("create", path, size);
     int fd = ::openat(root_fd, path.c_str(), O_CREAT|fi->flags, mode);
     if (fd < 0)
       throw Errno();
     fi->fh = fd;
-    fifo->request("post-create", path, size);
+    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -326,6 +378,7 @@ static int syncfs_fsync(const char *path_str, int datasync,
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("sync", path, 0);
+    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -347,6 +400,7 @@ static int syncfs_setxattr(const char *path_str, const char *name,
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("setattr", path, size);
     int ret = setxattr(real_path, prefixed_name, value, size, flags);
+    fifo->request_done();
     free (real_path);
     free (prefixed_name);
     if (ret < 0)
@@ -371,6 +425,7 @@ static int syncfs_removexattr(const char *path_str, const char *name)
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("setattr", path, 0);
     int ret = removexattr(real_path, prefixed_name);
+    fifo->request_done();
     free (real_path);
     free (prefixed_name);
     if (ret < 0)
@@ -394,8 +449,9 @@ static int syncfs_getxattr(const char *path_str, const char *name,
     sprintf(real_path, "%s%s", root_path, path.c_str());
     sprintf(prefixed_name, "%s%s", prefix, name);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
-    fifo->request("setattr", path, size);
+    fifo->request("getattr", path, size);
     int ret = getxattr(real_path, prefixed_name, value, size);
+    fifo->request_done();
     free (real_path);
     free (prefixed_name);
     if (ret < 0)
@@ -417,10 +473,11 @@ static int syncfs_listxattr(const char *path_str, char *buf, size_t size)
     size_t bufsize = 2 * size;
     char *mybuf = (char *)malloc (bufsize);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
-    fifo->request("setattr", path, size);
+    fifo->request("listattr", path, size);
     ssize_t ret;
   again:
     ret = listxattr(real_path, mybuf, 2 * size);
+    fifo->request_done();
     if (ret < 0)
       throw Errno();
     if (ret == bufsize) {
@@ -462,6 +519,7 @@ static int syncfs_fsyncdir(const char *path_str, int datasync,
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("sync", path, 0);
+    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -496,7 +554,7 @@ static int syncfs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = fuse_buf_size(in_buf);
-    fifo->request("pre-write", path, size);
+    fifo->request("write", path, size);
     int fd = fi->fh;
     fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
     buf.buf[0].flags = static_cast<fuse_buf_flags>(FUSE_BUF_IS_FD|FUSE_BUF_FD_SEEK);
@@ -505,7 +563,7 @@ static int syncfs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
     ssize_t res = fuse_buf_copy(&buf, in_buf, fuse_buf_copy_flags());
     if (res < 0)
       throw Errno(res);
-    fifo->request("post-write", path, size);
+    fifo->request_done();
     return res;
   } catch (Errno error) {
     return -error.error;
@@ -555,11 +613,11 @@ static int syncfs_rename(const char *path_str, const char *path2_str,
     Path path2(path2_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
-    fifo->request("pre-rename", path, strlen(path.c_str()));
+    fifo->request2("rename", path, path2, strlen(path.c_str()));
     int ret = ::renameat2(root_fd, path.c_str(),
 			  root_fd, path2.c_str(),
 			  0);
-    fifo->request("post-rename", path2, strlen(path2.c_str()));
+    fifo->request_done();
     if (ret < 0)
       throw Errno();
     return 0;

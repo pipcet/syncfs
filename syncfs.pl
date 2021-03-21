@@ -1,5 +1,4 @@
 #!/usr/bin/perl
-
 package SyncFSFile;
 
 sub new {
@@ -10,23 +9,31 @@ sub new {
 }
 
 sub touch {
-    my ($self, $h) = @_;
+    my ($self, $h, $done) = @_;
     $self->{time} = time;
-    if ($h->{command} eq "pre-write") {
+    if ($h->{command} eq "write" and !$done) {
 	$self->{modbytes} += $h->{size} + length $h->{path};
 	$self->{edited_by}->{$h->{user}}++;
 	my $cmdline = $h->{cmdline}->[0];
 	$self->{cmdlines}->{$cmdline} = $cmdline;
-    } elsif ($h->{command} eq "post-write") {
+    } elsif ($h->{command} eq "write" and $done) {
 	$self->{status} = "written";
-    } elsif ($h->{command} eq "post-unlink") {
+    } elsif ($h->{command} eq "unlink" and $done) {
 	$self->{status} = "deleted";
-    } elsif ($h->{command} eq "pre-unlink") {
+    } elsif ($h->{command} eq "unlink" and !$done) {
 	delete $self->{status};
-    } elsif ($h->{command} eq "pre-rename") {
+    } elsif ($h->{command} eq "rename" and !$done) {
 	delete $self->{status};
-    } elsif ($h->{command} eq "post-rename") {
-	$self->{status} = "written";
+    }
+}
+
+sub touch_renamed_to {
+    my ($self, $h, $done) = @_;
+    $self->{time} = time;
+    if (!$done) {
+	delete $self->{status};
+    } else {
+	$self->{status} = written;
     }
 }
 
@@ -102,8 +109,9 @@ sub del_files {
     }
 
     if (@files) {
+	my $stdin = join("\0", map { $_->path } @files);
 	eval {
-	    run(["git", "rm", "--ignore-unmatch", "--", map { $_->path } @files]) or die;
+	    run(["git", "rm", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
 	    run(["git", "commit", "--allow-empty", "-m", $message]) or die;
 	    for my $file (@files) {
 		$file->sync;
@@ -127,7 +135,8 @@ sub add_files {
     }
 
     if (@files) {
-	run(["git", "add", "--ignore-removal", "--", map { $_->path } @files]) or die;
+	my $stdin = join("\0", map { $_->path } @files);
+	run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
 	run(["git", "commit", "--allow-empty", "-m", $message]) or die;
 	for my $file (@files) {
 	    $file->sync;
@@ -153,12 +162,30 @@ sub resolve_starid {
 }
 
 sub update_score {
-    my ($h) = @_;
+    my ($h, $done) = @_;
     if (!exists $files{$h->{path}}) {
 	$files{$h->{path}} = new SyncFSFile($h->{path});
     }
     my $file = $files{$h->{path}};
-    $file->touch($h);
+    $file->touch($h, $done);
+}
+
+sub update_rename_score {
+    my ($h, $done) = @_;
+    if (!exists $files{$h->{path1}}) {
+	$files{$h->{path1}} = new SyncFSFile($h->{path1});
+    }
+    if (!exists $files{$h->{path2}}) {
+	$files{$h->{path2}} = new SyncFSFile($h->{path2});
+    }
+    {
+	my $file = $files{$h->{path1}};
+	$file->touch($h, $done);
+    }
+    {
+	my $file = $files{$h->{path2}};
+	$file->touch_renamed_to($h, $done);
+    }
 }
 
 sub contact_sync_host {
@@ -205,25 +232,37 @@ sub check_timer {
 	run_timer;
     } elsif ($time - $timer_last_run > 60) {
 	run_timer;
-    } else {
-	$timer = AE::timer 5, 0, sub { check_timer };
     }
+    $timer = AE::timer 5, 0, sub { check_timer };
 }
 
 my $cv = AnyEvent->condvar();
 my $hdl; $hdl = new AnyEvent::Handle(
     fh => $fh,
     on_read => sub {
+	my $hash;
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
 	    #print $line . "\n";
-	    return if $line eq "";
-	    my $hash = Mojo::JSON::decode_json($line);
-	    resolve_starid($hash);
-	    $outfh->print("\n");
-	    $outfh->flush;
-	    update_score($hash);
+	    if ($line ne "") {
+		$hash = Mojo::JSON::decode_json($line);
+		resolve_starid($hash);
+		$outfh->print("\n");
+		$outfh->flush;
+		if ($hash->{command} eq "rename") {
+		    update_rename_score($hash, 0);
+		} else {
+		    update_score($hash, 0);
+		}
+	    } else {
+		if ($hash->{command} eq "rename") {
+		    update_rename_score($hash, 1);
+		} else {
+		    update_score($hash, 1);
+		}
+	    }
 
+	    check_timer;
 	    $timer = AE::timer 5, 0, sub {
 		check_timer;
 	    }
