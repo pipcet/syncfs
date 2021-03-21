@@ -224,10 +224,9 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	    $outfh->flush;
 	    update_score($hash);
 
-	    $timer->again if $timer;
-		
 	    $timer = AE::timer 5, 0, sub {
-	    };
+		check_timer;
+	    }
 			    });
     },
     on_eof => sub { $cv->send },

@@ -599,6 +599,7 @@ int main(int argc, char **argv)
   int fifo_out_fd = open(fifo_out_name, O_RDONLY);
   FIFO *fifo = new FIFO(fifo_in_fd, fifo_out_fd);
   int lower_fd = open(argv[1], O_RDONLY|O_PATH);
+  root_path = strdup(argv[1]);
   if (lower_fd < 0)
     abort();
   root_fd = lower_fd;
