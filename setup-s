@@ -1,0 +1,4 @@
+#!/bin/bash
+mkdir sync
+(cd sync && mkfifo fifo fifo-out fifo-notify && mkdir lower mount)
+(cd sync/lower && git init && git config user.email 'pipcet@gmail.com' && git config user.name 'Pip Cet')
