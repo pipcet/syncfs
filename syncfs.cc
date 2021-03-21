@@ -55,7 +55,7 @@ public:
 	    p[1] = ',';
 	}
     }
-	
+
     path = std::string(newstr);
   }
 
@@ -125,6 +125,7 @@ static void fs_delete_recursively_at(int fd, std::string path)
 }
 
 static int root_fd;
+static char *root_path;
 
 static int fd_from_inode(fuse_ino_t ino)
 {
@@ -153,9 +154,12 @@ static int fuse_readlink(const char *path_str, char *buf, size_t size)
 {
   try {
     Path path(path_str);
-    int ret = ::readlinkat(root_fd, path.c_str(), buf, size);
+    ssize_t ret = ::readlinkat(root_fd, path.c_str(), buf, size);
     if (ret < 0)
       throw Errno();
+    if (ret == size)
+      throw Errno(ENAMETOOLONG);
+    buf[ret] = 0;
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -326,6 +330,129 @@ static int fuse_fsync(const char *path_str, int datasync,
   }
 }
 
+static int fuse_setxattr(const char *path_str, const char *name,
+			 const char *value, size_t size, int flags)
+{
+  try {
+    Path path(path_str);
+    const char *prefix = "syncfs.user.";
+    char *prefixed_name =
+      (char *)malloc (strlen(prefix) + strlen(name) + 1);
+    char *real_path =
+      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path, path.c_str());
+    sprintf(prefixed_name, "%s%s", prefix, name);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("setattr", path, size);
+    int ret = setxattr(real_path, prefixed_name, value, size, flags);
+    free (real_path);
+    free (prefixed_name);
+    if (ret < 0)
+      throw Errno();
+    return 0;
+  } catch (Errno error) {
+    return -error.error;
+  }
+}
+
+static int fuse_removexattr(const char *path_str, const char *name)
+{
+  try {
+    Path path(path_str);
+    const char *prefix = "syncfs.user.";
+    char *prefixed_name =
+      (char *)malloc (strlen(prefix) + strlen(name) + 1);
+    char *real_path =
+      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path, path.c_str());
+    sprintf(prefixed_name, "%s%s", prefix, name);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("setattr", path, 0);
+    int ret = removexattr(real_path, prefixed_name);
+    free (real_path);
+    free (prefixed_name);
+    if (ret < 0)
+      throw Errno();
+    return 0;
+  } catch (Errno error) {
+    return -error.error;
+  }
+}
+
+static int fuse_getxattr(const char *path_str, const char *name,
+			 char *value, size_t size)
+{
+  try {
+    Path path(path_str);
+    const char *prefix = "syncfs.user.";
+    char *prefixed_name =
+      (char *)malloc (strlen(prefix) + strlen(name) + 1);
+    char *real_path =
+      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path, path.c_str());
+    sprintf(prefixed_name, "%s%s", prefix, name);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("setattr", path, size);
+    int ret = getxattr(real_path, prefixed_name, value, size);
+    free (real_path);
+    free (prefixed_name);
+    if (ret < 0)
+      throw Errno();
+    return 0;
+  } catch (Errno error) {
+    return -error.error;
+  }
+}
+
+static int fuse_listxattr(const char *path_str, char *buf, size_t size)
+{
+  try {
+    Path path(path_str);
+    const char *prefix = "syncfs.user.";
+    char *real_path =
+      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path, path.c_str());
+    size_t bufsize = 2 * size;
+    char *mybuf = (char *)malloc (bufsize);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("setattr", path, size);
+    ssize_t ret;
+  again:
+    ret = listxattr(real_path, mybuf, 2 * size);
+    if (ret < 0)
+      throw Errno();
+    if (ret == bufsize) {
+      bufsize *= 2;
+      mybuf = (char *)realloc(mybuf, bufsize);
+      goto again;
+    }
+    mybuf[ret] = 0;
+
+    for (char *p = mybuf, *q = buf; ;)
+      {
+	if (p == mybuf + ret)
+	  break;
+	if (strncmp(p, prefix, strlen(prefix) == 0)) {
+	  p += strlen(prefix);
+	  ssize_t len = snprintf (q, buf + size - q, "%s", p);
+	  q += len;
+	  p += len;
+	  *q++ = 0;
+	  p++;
+	} else {
+	  p += strlen(p);
+	}
+	if (q == buf + size)
+	  break;
+      }
+    free (mybuf);
+    free (real_path);
+    return 0;
+  } catch (Errno error) {
+    return -error.error;
+  }
+}
+
 static int fuse_fsyncdir(const char *path_str, int datasync,
 			 struct fuse_file_info *fi)
 {
@@ -389,11 +516,11 @@ static int fuse_release(const char *path_str, fuse_file_info *fi)
   return 0;
 }
 
-static int fuse_symlink(const char *path1, const char *path_str)
+static int fuse_symlink(const char *target, const char *path_str)
 {
   try {
     Path path(path_str);
-    int ret = ::symlinkat(path1, root_fd, path.c_str());
+    int ret = ::symlinkat(target, root_fd, path.c_str());
     if (ret < 0)
       throw Errno();
     return 0;
@@ -452,6 +579,10 @@ static struct fuse_operations fuse_operations = {
   .chown = fuse_chown,
   .open = fuse_open,
   .fsync = fuse_fsync,
+  .setxattr = fuse_setxattr,
+  .getxattr = fuse_getxattr,
+  .listxattr = fuse_listxattr,
+  .removexattr = fuse_removexattr,
   .readdir = fuse_readdir,
   .fsyncdir = fuse_fsyncdir,
   .create = fuse_create,
