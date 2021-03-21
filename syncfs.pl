@@ -80,6 +80,7 @@ use AnyEvent;
 use AnyEvent::Handle;
 use Carp::Always;
 
+my $timer_needed = 0;
 my $fifo = shift;
 my $outfifo = shift;
 my $notifyfifo = shift;
@@ -103,7 +104,10 @@ sub del_files {
     my $message = "";
     for my $file (sort { $b->score <=> $a->score } values %files) {
 	next if $file->{status} ne "deleted";
-	last if ($i++ == $maxfiles);
+	if ($i++ == $maxfiles) {
+	    $timer_needed = 1;
+	    last;
+	}
 	push @files, $file;
 	$message .= $file->message;
     }
@@ -129,7 +133,10 @@ sub add_files {
     for my $file (sort { $b->score <=> $a->score } values %files) {
 	next if $file->{status} ne "written";
 	last if $file->score == 0;
-	last if ($i++ == $maxfiles);
+	if ($i++ == $maxfiles) {
+	    $timer_needed = 1;
+	    last;
+	}
 	push @files, $file;
 	$message .= $file->message;
     }
@@ -229,11 +236,13 @@ sub check_timer;
 sub check_timer {
     my $time = time;
     if ($time - $timer_last_started > 5) {
+	$timer_needed = 0;
 	run_timer;
     } elsif ($time - $timer_last_run > 60) {
+	$timer_needed = 0;
 	run_timer;
     }
-    $timer = AE::timer 5, 0, sub { check_timer };
+    $timer = AE::timer 5, 0, sub { check_timer } if $timer_needed;
 }
 
 my $cv = AnyEvent->condvar();

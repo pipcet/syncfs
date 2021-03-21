@@ -13,7 +13,7 @@ while(1) {
 	my $stdin = "";
 	my $stdout = "";
 	my $stderr = "";
-	run(["sh", "-c", "cd lower; git pull origin master"], \$stdin, \$stdout, \$stderr);
+	run(["sh", "-c", "cd lower; git pull remote master"], \$stdin, \$stdout, \$stderr);
 	warn $stderr if $stderr;
     }
 }

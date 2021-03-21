@@ -222,9 +222,9 @@ static int syncfs_mkdir(const char *path_str, mode_t mode)
     mode |= S_IFDIR;
     fifo->request("mkdir", path, strlen(path.c_str()));
     int ret = ::mkdirat(root_fd, path.c_str(), mode);
+    fifo->request_done();
     if (ret < 0)
       throw Errno();
-    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -237,9 +237,10 @@ static int syncfs_rmdir(const char *path_str)
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("rmdir", path, strlen(path.c_str()));
-    if (::unlinkat(root_fd, path.c_str(), AT_REMOVEDIR) < 0)
-      throw Errno();
+    int ret = ::unlinkat(root_fd, path.c_str(), AT_REMOVEDIR);
     fifo->request_done();
+    if (ret < 0)
+      throw Errno();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -253,9 +254,10 @@ static int syncfs_unlink(const char *path_str)
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
     fifo->request("unlink", path, size);
-    if (::unlinkat(root_fd, path.c_str(), 0) < 0)
-      throw Errno();
+    int ret = ::unlinkat(root_fd, path.c_str(), 0);
     fifo->request_done();
+    if (ret < 0)
+      throw Errno();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -339,10 +341,10 @@ static int syncfs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
     size_t size = 0;
     fifo->request("create", path, size);
     int fd = ::openat(root_fd, path.c_str(), O_CREAT|fi->flags, mode);
+    fifo->request_done();
     if (fd < 0)
       throw Errno();
     fi->fh = fd;
-    fifo->request_done();
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -561,9 +563,9 @@ static int syncfs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
     buf.buf[0].fd = fd;
     buf.buf[0].pos = off;
     ssize_t res = fuse_buf_copy(&buf, in_buf, fuse_buf_copy_flags());
+    fifo->request_done();
     if (res < 0)
       throw Errno(res);
-    fifo->request_done();
     return res;
   } catch (Errno error) {
     return -error.error;
@@ -580,7 +582,10 @@ static int syncfs_symlink(const char *target, const char *path_str)
 {
   try {
     Path path(path_str);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("symlink", path, strlen(target));
     int ret = ::symlinkat(target, root_fd, path.c_str());
+    fifo->request_done();
     if (ret < 0)
       throw Errno();
     return 0;
@@ -662,6 +667,7 @@ int main(int argc, char **argv)
   if (lower_fd < 0)
     abort();
   root_fd = lower_fd;
+  root_path = strdup(argv[1]);
   struct rlimit limit;
   if (getrlimit(RLIMIT_NOFILE, &limit) == 0) {
     limit.rlim_cur = limit.rlim_max;

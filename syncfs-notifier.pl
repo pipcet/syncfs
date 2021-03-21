@@ -2,6 +2,7 @@
 use IPC::Run qw(run);
 
 my $fifo = shift;
+my $remote = shift;
 my $fh;
 open $fh, $fifo or die;
 while (<$fh>) {
@@ -9,6 +10,6 @@ while (<$fh>) {
     my $stdin = "";
     my $stdout = "";
     my $stderr = "";
-    run(["ssh", "pip\@10.4.0.1", "/bin/echo", "trigger", ">>", "syncfs-pings"],
+    run(["ssh", $remote, "date", ">>", "sync/syncfs-pings"],
 	\$stdin, \$stdout, \$stderr) or die $stderr;
 }
