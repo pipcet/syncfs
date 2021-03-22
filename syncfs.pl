@@ -12,7 +12,6 @@ sub new {
 
 sub touch {
     my ($self, $h, $done) = @_;
-    warn Dumper($h);
     $self->{time} = time;
     if ($h->{command} eq "write" and !$done) {
 	$self->{modbytes} += $h->{size} + length $h->{path};
@@ -20,7 +19,6 @@ sub touch {
 	my $cmdline = $h->{cmdline}->[0];
 	$self->{cmdlines}->{$cmdline} = $cmdline;
     } elsif (($h->{command} eq "write") and $done) {
-	warn "set status to written";
 	$self->{status} = "written";
     } elsif (($h->{command} eq "create") and $done) {
 	$self->{status} = "written";
@@ -151,10 +149,8 @@ sub add_files {
 	$message .= $file->message;
     }
 
-    warn "adding " . @files . " files";
     if (@files) {
 	my $stdin = join("\0", map { $_->path } @files) . "\0";
-	warn $stdin;
 	run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
 	run(["git", "commit", "--allow-empty", "-m", $message]) or die;
 	for my $file (@files) {
@@ -243,7 +239,6 @@ sub run_timer {
     $timer_last_run = time;
     return if ($timer_running);
     $timer_running = 1;
-    warn "running timer";
     if (add_files() || del_files()) {
     # contact_sync_host("10.4.0.1");
 	print $notifyfh `pwd`;
@@ -290,7 +285,6 @@ my $hdl; $hdl = new AnyEvent::Handle(
 		    $delay = update_score($hash, 0);
 		}
 	    } else {
-		warn "DONE";
 		$outfh->print("\n");
 		$outfh->flush;
 		if ($hash->{command} eq "rename") {
