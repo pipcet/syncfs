@@ -1,8 +1,10 @@
 file systems:
 
+work - base fs - overlay work directory
 lower - base fs - the common, agreed-upon base (for all servers)
 upper - base fs - per-server overlay directory
-merge - overlay - upper overlaid upon lower
+merge - overlay - upper overlaid on lower
+c00git - c00gitfs - de-mknodded version of upper
 mount - syncfs - mountable version of merge
 
 for synchronization, changes are made in mount. They're written back

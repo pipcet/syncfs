@@ -659,10 +659,10 @@ static struct fuse_operations syncfs_operations = {
 
 int main(int argc, char **argv)
 {
-  const char *fifo_in_name = strdup(argv[3]);
-  int fifo_in_fd = open(fifo_in_name, O_WRONLY);
-  const char *fifo_out_name = strdup(argv[4]);
-  int fifo_out_fd = open(fifo_out_name, O_RDONLY);
+  const char *fifos = strdup(argv[3]);
+  int fifos_fd = open(fifos, O_DIRECTORY);
+  int fifo_in_fd = openat(fifos_fd, "fuse-to-daemon", O_WRONLY);
+  int fifo_out_fd = openat(fifos_fd, "daemon-to-fuse", O_RDONLY);
   FIFO *fifo = new FIFO(fifo_in_fd, fifo_out_fd);
   int lower_fd = open(argv[1], O_RDONLY|O_PATH);
   if (lower_fd < 0)

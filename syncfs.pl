@@ -146,9 +146,7 @@ use AnyEvent;
 use AnyEvent::Handle;
 
 my $timer_needed = 0;
-my $fifo = shift;
-my $outfifo = shift;
-my $notifyfifo = shift;
+my $fifos = shift;
 
 my %files;
 
@@ -298,12 +296,12 @@ sub contact_sync_host {
 my $synctime = 0;
 
 my $fh;
-open $fh, "$fifo" or die;
+open $fh, "$fifos/fuse-to-daemon" or die;
 my $outfh;
-open $outfh, ">$outfifo" or die;
+open $outfh, ">$fifos/daemon-to-fuse" or die;
 my $notifyfh;
-open $notifyfh, ">$notifyfifo" or die;
-chdir "lower";
+open $notifyfh, ">$fifos/daemon-to-notify" or die;
+chdir "c00git";
 
 my $timer_last_run = 0;
 my $timer_running = 0;
@@ -314,11 +312,13 @@ sub run_timer {
     $timer_last_run = time;
     return if ($timer_running);
     $timer_running = 1;
-    if (add_files(%opts) || del_files(%opts)) {
-    # contact_sync_host("10.4.0.1");
-	print $notifyfh `pwd`;
-	flush $notifyfh;
-    }
+    eval {
+	if (add_files(%opts) || del_files(%opts)) {
+	    # contact_sync_host("10.4.0.1");
+	    print $notifyfh `pwd`;
+	    flush $notifyfh;
+	}
+    };
     $timer_running = 0;
     $timer_last_run = time;
 }
@@ -348,6 +348,7 @@ my $hdl; $hdl = new AnyEvent::Handle(
     on_read => sub {
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
+	    warn "$line";
 	    my $delay;
 	    if ($line ne "") {
 		$hash = Mojo::JSON::decode_json($line);

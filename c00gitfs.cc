@@ -1,6 +1,6 @@
 /* Rewrite. Doesn't use GPL2-only code. */
 
-/* c00fs translates symlinks to ' ' <-> character device 0 0, which
+/* c00gitfs translates symlinks to ' ' <-> character device 0 0, which
    overlayfs uses as whiteout node. It also eats fsync. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -50,12 +50,6 @@ public:
     while (str[0] == '/')
       str++;
     char *newstr = strdup(str[0] ? str : ".");
-    if (newstr[0] == '.' && strcmp(newstr, ".") && strcmp(newstr, ".."))
-      newstr[0] = ',';
-    for (char *p = newstr; *p; p++) {
-      if (*p == '/' && p[1] == '.')
-	p[1] = ',';
-    }
 
     path = std::string(newstr);
   }
@@ -118,28 +112,26 @@ static bool is_symlink(Path path)
 static bool is_whiteout(Path path)
 {
   char link[256];
-  if (is_symlink(path)) {
-    if (readlinkat(root_fd, path.c_str(), link, sizeof link) < 0)
-      return 0;
-    link[255] = 0;
-    return !strcmp(" ", link);
-  }
-  return 0;
+  struct stat statbuf;
+  int res = ::fstatat(root_fd, path.c_str(), &statbuf, AT_SYMLINK_NOFOLLOW);
+  if (res < 0)
+    return 0;
+  return S_ISCHR(statbuf.st_mode) && statbuf.st_rdev == 0;
 }
 
-static int c00fs_getattr(const char *path_str,
-			 struct stat *statp,
-			 fuse_file_info* fi_may_be_null)
+static int c00gitfs_getattr(const char *path_str,
+			    struct stat *statp,
+			    fuse_file_info* fi_may_be_null)
 {
   try {
     Path path(path_str);
     int ret = fstatat(root_fd, path.c_str(), statp, AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
     if (ret < 0)
       throw Errno();
-    if (is_whiteout(path)) {
+    if (statp->st_mode == S_IFCHR && major(statp->st_rdev) == 0 &&
+	minor(statp->st_rdev) == 0) {
       statp->st_mode &= ~S_IFMT;
-      statp->st_mode |= S_IFCHR;
-      statp->st_dev = 0;
+      statp->st_mode |= S_IFLNK;
     }
     return 0;
   } catch (Errno error) {
@@ -147,12 +139,17 @@ static int c00fs_getattr(const char *path_str,
   }
 }
 
-static int c00fs_readlink(const char *path_str, char *buf, size_t size)
+static int c00gitfs_readlink(const char *path_str, char *buf, size_t size)
 {
   try {
     Path path(path_str);
-    if (is_whiteout(path))
-      throw Errno(EINVAL);
+    if (is_whiteout(path)) {
+      if (size < 2)
+	throw Errno(ENAMETOOLONG);
+      buf[0] = ' ';
+      buf[1] = 0;
+      return 0;
+    }
     ssize_t ret = ::readlinkat(root_fd, path.c_str(), buf, size);
     if (ret < 0)
       throw Errno();
@@ -165,21 +162,7 @@ static int c00fs_readlink(const char *path_str, char *buf, size_t size)
   }
 }
 
-static int c00fs_mknod(const char *path_str, mode_t mode, dev_t dev)
-{
-  try {
-    Path path(path_str);
-    if (major(dev) || minor(dev))
-      throw Errno(EINVAL);
-    if (::symlinkat(" ", root_fd, path.c_str()) < 0)
-      throw Errno();
-    return 0;
-  } catch (Errno error) {
-    return -error.error;
-  }
-}
-
-static int c00fs_mkdir(const char *path_str, mode_t mode)
+static int c00gitfs_mkdir(const char *path_str, mode_t mode)
 {
   try {
     Path path(path_str);
@@ -193,7 +176,7 @@ static int c00fs_mkdir(const char *path_str, mode_t mode)
   }
 }
 
-static int c00fs_rmdir(const char *path_str)
+static int c00gitfs_rmdir(const char *path_str)
 {
   try {
     Path path(path_str);
@@ -206,7 +189,7 @@ static int c00fs_rmdir(const char *path_str)
   }
 }
 
-static int c00fs_unlink(const char *path_str)
+static int c00gitfs_unlink(const char *path_str)
 {
   try {
     Path path(path_str);
@@ -220,7 +203,7 @@ static int c00fs_unlink(const char *path_str)
   }
 }
 
-static int c00fs_chmod(const char *path_str, mode_t mode,
+static int c00gitfs_chmod(const char *path_str, mode_t mode,
 		      fuse_file_info *fi)
 {
   try {
@@ -236,7 +219,7 @@ static int c00fs_chmod(const char *path_str, mode_t mode,
   }
 }
 
-static int c00fs_chown(const char *path_str, uid_t uid, gid_t gid,
+static int c00gitfs_chown(const char *path_str, uid_t uid, gid_t gid,
 		      fuse_file_info *fi)
 {
   try {
@@ -252,7 +235,7 @@ static int c00fs_chown(const char *path_str, uid_t uid, gid_t gid,
   }
 }
 
-static int c00fs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
+static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
 			off_t offset, fuse_file_info *, enum fuse_readdir_flags)
 {
     Path path(path_str);
@@ -264,15 +247,10 @@ static int c00fs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler
     char *name = dirent->d_name;
     struct stat stat;
     ::fstatat(dirfd(dir), name, &stat, 0);
-    if (is_whiteout(path)) {
+    if (S_ISCHR(stat.st_mode) && stat.st_rdev == 0) {
       stat.st_mode &= ~S_IFMT;
-      stat.st_mode |= S_IFCHR;
-      stat.st_dev = 0;
+      stat.st_mode |= S_IFLNK;
     }
-    if (name[0] == ',')
-      name[0] = '.';
-    else if (name[0] == '.' &&strcmp(name, ".") && strcmp(name, ".."))
-      continue;
     if (filler (buf, name, &stat, 0, (fuse_fill_dir_flags)FUSE_FILL_DIR_PLUS))
       break;
   }
@@ -281,7 +259,7 @@ static int c00fs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler
   return 0;
 }
 
-static int c00fs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
+static int c00gitfs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
 {
   try {
     Path path(path_str);
@@ -296,7 +274,7 @@ static int c00fs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
   }
 }
 
-static int c00fs_open(const char *path_str, fuse_file_info *fi)
+static int c00gitfs_open(const char *path_str, fuse_file_info *fi)
 {
     Path path(path_str);
   int fd = ::openat(root_fd, path.c_str(), fi->flags);
@@ -306,7 +284,7 @@ static int c00fs_open(const char *path_str, fuse_file_info *fi)
   return 0;
 }
 
-static int c00fs_utimens(const char *path_str, const struct timespec tv[2],
+static int c00gitfs_utimens(const char *path_str, const struct timespec tv[2],
 			struct fuse_file_info *fi)
 {
   Path path(path_str);
@@ -318,7 +296,7 @@ static int c00fs_utimens(const char *path_str, const struct timespec tv[2],
   return 0;
 }
 
-static int c00fs_fsync(const char *path_str, int datasync,
+static int c00gitfs_fsync(const char *path_str, int datasync,
 		      struct fuse_file_info *fi)
 {
   try {
@@ -329,7 +307,7 @@ static int c00fs_fsync(const char *path_str, int datasync,
   }
 }
 
-static int c00fs_setxattr(const char *path_str, const char *name,
+static int c00gitfs_setxattr(const char *path_str, const char *name,
 			 const char *value, size_t size, int flags)
 {
   try {
@@ -352,7 +330,7 @@ static int c00fs_setxattr(const char *path_str, const char *name,
   }
 }
 
-static int c00fs_removexattr(const char *path_str, const char *name)
+static int c00gitfs_removexattr(const char *path_str, const char *name)
 {
   try {
     Path path(path_str);
@@ -374,7 +352,7 @@ static int c00fs_removexattr(const char *path_str, const char *name)
   }
 }
 
-static int c00fs_getxattr(const char *path_str, const char *name,
+static int c00gitfs_getxattr(const char *path_str, const char *name,
 			 char *value, size_t size)
 {
   try {
@@ -397,7 +375,7 @@ static int c00fs_getxattr(const char *path_str, const char *name,
   }
 }
 
-static int c00fs_listxattr(const char *path_str, char *buf, size_t size)
+static int c00gitfs_listxattr(const char *path_str, char *buf, size_t size)
 {
   try {
     Path path(path_str);
@@ -444,7 +422,7 @@ static int c00fs_listxattr(const char *path_str, char *buf, size_t size)
   }
 }
 
-static int c00fs_fsyncdir(const char *path_str, int datasync,
+static int c00gitfs_fsyncdir(const char *path_str, int datasync,
 			 struct fuse_file_info *fi)
 {
   try {
@@ -455,7 +433,7 @@ static int c00fs_fsyncdir(const char *path_str, int datasync,
   }
 }
 
-static int c00fs_read_buf(const char *path_str, struct fuse_bufvec **out_buf,
+static int c00gitfs_read_buf(const char *path_str, struct fuse_bufvec **out_buf,
 			 size_t size, off_t off, fuse_file_info *fi)
 {
   try {
@@ -476,7 +454,7 @@ static int c00fs_read_buf(const char *path_str, struct fuse_bufvec **out_buf,
   }
 }
 
-static int c00fs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
+static int c00gitfs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
 			  off_t off, fuse_file_info *fi)
 {
   try {
@@ -496,17 +474,23 @@ static int c00fs_write_buf(const char *path_str, struct fuse_bufvec *in_buf,
   }
 }
 
-static int c00fs_release(const char *path_str, fuse_file_info *fi)
+static int c00gitfs_release(const char *path_str, fuse_file_info *fi)
 {
   ::close (fi->fh);
   return 0;
 }
 
-static int c00fs_symlink(const char *target, const char *path_str)
+static int c00gitfs_symlink(const char *target, const char *path_str)
 {
   try {
     Path path(path_str);
-    int ret = ::symlinkat(target, root_fd, path.c_str());
+    int ret;
+    if (strcmp(target, " "))
+      ret = ::symlinkat(target, root_fd, path.c_str());
+    else {
+      ret = ::mknodat(root_fd, path.c_str(), S_IFCHR, 0);
+      ret = 0;
+    }
     if (ret < 0)
       throw Errno();
     return 0;
@@ -515,7 +499,7 @@ static int c00fs_symlink(const char *target, const char *path_str)
   }
 }
 
-static int c00fs_link(const char *path1, const char *path_str)
+static int c00gitfs_link(const char *path1, const char *path_str)
 {
   try {
     Path path(path_str);
@@ -531,7 +515,7 @@ static int c00fs_link(const char *path1, const char *path_str)
   }
 }
 
-static int c00fs_rename(const char *path_str, const char *path2_str,
+static int c00gitfs_rename(const char *path_str, const char *path2_str,
 		       unsigned int flags)
 {
   try {
@@ -549,30 +533,29 @@ static int c00fs_rename(const char *path_str, const char *path2_str,
   }
 }
 
-static struct fuse_operations c00fs_operations = {
-  .getattr = c00fs_getattr,
-  .readlink = c00fs_readlink,
-  .mknod = c00fs_mknod,
-  .mkdir = c00fs_mkdir,
-  .unlink = c00fs_unlink,
-  .rmdir = c00fs_rmdir,
-  .symlink = c00fs_symlink,
-  .rename = c00fs_rename,
-  .link = c00fs_link,
-  .chmod = c00fs_chmod,
-  .chown = c00fs_chown,
-  .open = c00fs_open,
-  .fsync = c00fs_fsync,
+static struct fuse_operations c00gitfs_operations = {
+  .getattr = c00gitfs_getattr,
+  .readlink = c00gitfs_readlink,
+  .mkdir = c00gitfs_mkdir,
+  .unlink = c00gitfs_unlink,
+  .rmdir = c00gitfs_rmdir,
+  .symlink = c00gitfs_symlink,
+  .rename = c00gitfs_rename,
+  .link = c00gitfs_link,
+  .chmod = c00gitfs_chmod,
+  .chown = c00gitfs_chown,
+  .open = c00gitfs_open,
+  .fsync = c00gitfs_fsync,
   //.setxattr = syncfs_setxattr,
   //.getxattr = syncfs_getxattr,
   //.listxattr = syncfs_listxattr,
   //.removexattr = syncfs_removexattr,
-  .readdir = c00fs_readdir,
-  .fsyncdir = c00fs_fsyncdir,
-  .create = c00fs_create,
-  .utimens = c00fs_utimens,
-  .write_buf = c00fs_write_buf,
-  .read_buf = c00fs_read_buf,
+  .readdir = c00gitfs_readdir,
+  .fsyncdir = c00gitfs_fsyncdir,
+  .create = c00gitfs_create,
+  .utimens = c00gitfs_utimens,
+  .write_buf = c00gitfs_write_buf,
+  .read_buf = c00gitfs_read_buf,
 };
 
 int main(int argc, char **argv)
@@ -592,11 +575,11 @@ int main(int argc, char **argv)
     abort();
   if (fuse_opt_add_arg(&args, "-o"))
     abort();
-  if (fuse_opt_add_arg(&args, "fsname=c00fs"))
+  if (fuse_opt_add_arg(&args, "fsname=c00gitfs"))
     abort();
   //if (fuse_opt_add_arg(&args, "-odebug"))
   //  abort();
-  fuse *fuse = fuse_new (&args, &c00fs_operations, sizeof(c00fs_operations),
+  fuse *fuse = fuse_new (&args, &c00gitfs_operations, sizeof(c00gitfs_operations),
 			 nullptr);
   fuse_mount(fuse, argv[2]);
 

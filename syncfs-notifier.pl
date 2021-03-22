@@ -4,10 +4,10 @@ use AnyEvent;
 use AnyEvent::Handle;
 use IPC::Run qw(run);
 
-my $fifo = shift;
+my $fifos = shift;
 my $remote = shift;
 my $fh;
-open $fh, $fifo or die;
+open $fh, "$fifos/daemon-to-notify" or die;
 my $timer;
 my $hdl; $hdl = new AnyEvent::Handle(
     fh => $fh,

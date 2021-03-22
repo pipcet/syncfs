@@ -1,0 +1,61 @@
+#!/usr/bin/perl
+use IPC::Run qw(start run);
+
+mkdir("fifos");
+system("mkfifo fifos/fuse-to-daemon fifos/daemon-to-fuse fifos/daemon-to-notify");
+mkdir("work");
+
+mkdir("lower");
+mkdir("upper");
+mkdir("merge");
+mkdir("mount");
+mkdir("c00git");
+system("echo > syncfs-pings");
+
+my @ps;
+my $path = shift;
+
+run(["sudo", "mount", "-toverlay", "-olowerdir=lower,upperdir=upper,workdir=work,rw", "overlay", "merge"]) or die;
+push @ps, start(["$path/c00gitfs", "upper", "c00git"]);
+sleep 1;
+my $remote = shift;
+system("cd c00git; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config pull.rebase false; git remote add $remote $remote:sync/c00git");
+push @ps, start(["$path/syncfs_mount", "merge", "mount", "fifos"]);
+sleep 1;
+push @ps, start(["perl", "$path/syncfs.pl", "fifos"]);
+sleep 1;
+push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifos", $remote]);
+sleep 1;
+push @ps, start(["perl", "$path/syncfs-secondary.pl", $remote]);
+sleep 1;
+
+sub terminate {
+    for my $p (@ps) {
+	$p->kill_kill;
+    }
+    while (!run(["sudo", "umount", "mount"], \$stdin, \$stdout, \$stderr) &&
+	   ($stderr !~ /not mounted/)) {
+	sleep 1;
+    }
+    while (!run(["sudo", "umount", "merge"], \$stdin, \$stdout, \$stderr) &&
+	   ($stderr !~ /not mounted/)) {
+	sleep 1;
+    }
+    while (!run(["sudo", "umount", "c00git"], \$stdin, \$stdout, \$stderr) &&
+	   ($stderr !~ /not mounted/)) {
+	sleep 1;
+    }
+    exit 0;
+}
+
+$SIG{INT} = sub {
+    terminate;
+};
+
+$SIG{TERM} = sub {
+    terminate;
+};
+
+while (1) {
+    sleep 1;
+}
