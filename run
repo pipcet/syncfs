@@ -1,0 +1,4 @@
+#!/bin/bash
+./a.out lower mount fifo fifo-out fifo-notify &
+perl ./syncfs.pl fifo fifo-out fifo-notify &
+perl ./syncfs-notifier.pl fifo-notify &

@@ -119,7 +119,7 @@ sub del_files {
     }
 
     if (@files) {
-	my $stdin = join("\0", map { $_->path } @files);
+	my $stdin = join("\0", map { $_->path } @files) . "\0";
 	eval {
 	    run(["git", "rm", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
 	    run(["git", "commit", "--allow-empty", "-m", $message]) or die;
@@ -127,7 +127,11 @@ sub del_files {
 		$file->sync;
 	    }
 	};
+
+	return 1;
     }
+
+    return 0;
 }
 
 sub add_files {
@@ -149,13 +153,18 @@ sub add_files {
 
     warn "adding " . @files . " files";
     if (@files) {
-	my $stdin = join("\0", map { $_->path } @files);
+	my $stdin = join("\0", map { $_->path } @files) . "\0";
+	warn $stdin;
 	run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
 	run(["git", "commit", "--allow-empty", "-m", $message]) or die;
 	for my $file (@files) {
 	    $file->sync;
 	}
+
+	return 1;
     }
+
+    return 0;
 }
 
 my $resolve_starid_last_pid;
@@ -235,11 +244,11 @@ sub run_timer {
     return if ($timer_running);
     $timer_running = 1;
     warn "running timer";
-    add_files();
-    del_files();
+    if (add_files() || del_files()) {
     # contact_sync_host("10.4.0.1");
-    print $notifyfh `pwd`;
-    flush $notifyfh;
+	print $notifyfh `pwd`;
+	flush $notifyfh;
+    }
     $timer_running = 0;
     $timer_last_run = time;
 }
@@ -293,6 +302,9 @@ my $hdl; $hdl = new AnyEvent::Handle(
 
 	    if ($delay == 0) {
 		run_timer;
+		$timer = AE::timer 5, 0, sub {
+		    check_timer;
+		}
 	    } else {
 		check_timer;
 		$timer = AE::timer 5, 0, sub {

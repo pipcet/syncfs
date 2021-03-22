@@ -1,0 +1,32 @@
+#!/usr/bin/perl
+# run from ~/sync as syncfs <remote IP>
+# TODO: should grab path from argv[0]
+use IPC::Run qw(run start);
+
+my $remote = shift;
+my $path = $ENV{HOME} . "/syncfs/";
+my @ps;
+push @ps, start(["perl", "$path/syncfs.pl", "fifo", "fifo-out", "fifo-notify"]);
+push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifo-notify", $remote]);
+push @ps, start(["perl", "$path/syncfs-secondary.pl"]);
+push @ps, start([$path . "a.out", "lower", "mount", "fifo", "fifo-out", "fifo-notify"]);
+
+$SIG{INT} = sub {
+    for my $p (@ps) {
+	$p->kill_kill;
+    }
+    run(["sudo", "umount", "mount"]);
+    exit 0;
+};
+
+$SIG{TERM} = sub {
+    for my $p (@ps) {
+	$p->kill_kill;
+    }
+    run(["sudo", "umount", "mount"]);
+    exit 0;
+};
+
+while (1) {
+    sleep 1;
+}

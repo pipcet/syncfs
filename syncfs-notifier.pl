@@ -13,6 +13,7 @@ my $hdl; $hdl = new AnyEvent::Handle(
     fh => $fh,
     on_read => sub {
 	shift->unshift_read(line => sub {
+	    warn "notified";
 	    $timer = AE::timer 1, 0, sub {
 		my $stdin = "";
 		my $stdout = "";

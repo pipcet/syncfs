@@ -48,12 +48,9 @@ public:
     char *newstr = strdup(str[0] ? str : ".");
     if (newstr[0] == '.' && strcmp(newstr, ".") && strcmp(newstr, ".."))
       newstr[0] = ',';
-    if (newstr[0] && newstr[1]) {
-      for (char *p = newstr + 2; *p; p++)
-	{
-	  if (*p == '/' && p[1] == '.')
-	    p[1] = ',';
-	}
+    for (char *p = newstr; *p; p++) {
+      if (*p == '/' && p[1] == '.')
+	p[1] = ',';
     }
 
     path = std::string(newstr);
