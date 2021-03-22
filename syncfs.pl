@@ -3,17 +3,36 @@ package SyncFSFile;
 
 use Data::Dumper;
 
+sub bucket {
+    my ($n) = shift;
+    if ($n == 0) {
+	return 0;
+    }
+    if ($n < 0) {
+	return - bucket(-$n);
+    }
+    my $bucket = 0;
+    while ($n) {
+	$bucket++;
+	$n = int($n/2);
+    }
+    return $bucket;
+}
+
 sub status_time_stats {
     my $time0 = time;
     for my $status (sort { $a cmp $b } keys %SyncFSFile::by_status_time) {
 	my $h = $SyncFSFile::by_status_time{$status};
+	my %buckets;
 	for my $time (sort { $a <=> $b } keys %$h) {
 	    my $count = 0;
 	    my $h = $h->{$time};
 	    for my $file (values %$h) {
-		$count++;
+		$buckets{bucket($time0 - $time)}++;
 	    }
-	    print "$status " . ($time0 - $time) . " $count\n";
+	}
+	for my $bucket (sort { $a <=> $b } keys %buckets) {
+	    print "$status $bucket " . $buckets{$bucket} . "\n";
 	}
     }
 }
@@ -101,6 +120,16 @@ sub touch_renamed_to {
     }
 }
 
+sub touch_renamed_from {
+    my ($self, $h, $done) = @_;
+    $self->{time} = time;
+    if (!$done) {
+	$self->status("unknown");
+    } else {
+	$self->status("deleted");
+    }
+}
+
 sub score {
     my ($self) = @_;
     my $age = time - $self->{time};
@@ -131,7 +160,7 @@ sub sync {
     my $self = shift;
     $self->{modbytes} = 0;
     $self->status("synched");
-    $self->old_by_time(0);
+    $self->old_by_time(time + 120);
 }
 
 package main;
@@ -226,6 +255,43 @@ sub add_files {
     return 0;
 }
 
+my @lowerer_queue;
+my $lowerer_handle;
+my $lowerer_fh;
+
+sub lower_files {
+    my %opts = @_;
+    my $maxfiles = 32;
+    my @files;
+    my $i = 0;
+    for my $file (sort { $b->score <=> $a->score } values %files) {
+	next if $file->status ne "synched";
+	if ($i++ == $maxfiles) {
+	    $timer_needed = 1;
+	    last;
+	}
+	push @files, $file;
+    }
+
+    if (@files) {
+	for my $file (@files) {
+	    if (@lowerer_queue == 0) {
+		warn "lowerer_queue now " . scalar(@lowerer_queue);
+		push @lowerer_queue, $file;
+		$lowerer_handle = new AnyEvent::Handle(
+		    fh => $lowerer_fh,);
+		$lowerer_handle->push_write($file->path . "\n");
+	    } else {
+		push @lowerer_queue, $file;
+	    }
+	}
+
+	return 1;
+    }
+
+    return 0;
+}
+
 my $resolve_starid_last_pid;
 my $resolve_starid_user;
 my $resolve_starid_cmdline;
@@ -275,7 +341,7 @@ sub update_rename_score {
     }
     {
 	my $file = $files{$h->{path1}};
-	$file->touch($h, $done);
+	$file->touch_renamed_from($h, $done);
     }
     {
 	my $file = $files{$h->{path2}};
@@ -301,6 +367,7 @@ my $outfh;
 open $outfh, ">$fifos/daemon-to-fuse" or die;
 my $notifyfh;
 open $notifyfh, ">$fifos/daemon-to-notify" or die;
+open $lowerer_fh, ">$fifos/daemon-to-lowerer" or die;
 chdir "c00git";
 
 my $timer_last_run = 0;
@@ -313,7 +380,7 @@ sub run_timer {
     return if ($timer_running);
     $timer_running = 1;
     eval {
-	if (add_files(%opts) || del_files(%opts)) {
+	if (add_files(%opts) || del_files(%opts) || lower_files(%opts)) {
 	    # contact_sync_host("10.4.0.1");
 	    print $notifyfh `pwd`;
 	    flush $notifyfh;

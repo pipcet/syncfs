@@ -2,7 +2,7 @@
 use IPC::Run qw(start run);
 
 mkdir("fifos");
-system("mkfifo fifos/fuse-to-daemon fifos/daemon-to-fuse fifos/daemon-to-notify");
+system("mkfifo fifos/fuse-to-daemon fifos/daemon-to-fuse fifos/daemon-to-notify fifos/daemon-to-lowerer");
 mkdir("work");
 
 mkdir("lower");
@@ -19,6 +19,7 @@ run(["sudo", "mount", "-toverlay", "-olowerdir=lower,upperdir=upper,workdir=work
 push @ps, start(["$path/c00gitfs", "upper", "c00git"]);
 sleep 1;
 my $remote = shift;
+my $localn = ($remote eq "10.4.0.1") ? "10.4.0.2" : "10.4.0.1";
 system("cd c00git; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config pull.rebase false; git remote add $remote $remote:sync/c00git");
 push @ps, start(["$path/syncfs_mount", "merge", "mount", "fifos"]);
 sleep 1;
@@ -27,6 +28,10 @@ sleep 1;
 push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifos", $remote]);
 sleep 1;
 push @ps, start(["perl", "$path/syncfs-secondary.pl", $remote]);
+sleep 1;
+push @ps, start(["perl", "$path/syncfs-lowerer.pl", $localn, $remote]);
+sleep 1;
+push @ps, start(["perl", "$path/syncfs-colowerer.pl", $localn, $remote]);
 sleep 1;
 
 sub terminate {
