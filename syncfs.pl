@@ -3,15 +3,72 @@ package SyncFSFile;
 
 use Data::Dumper;
 
+sub status_time_stats {
+    my $time0 = time;
+    for my $status (sort { $a cmp $b } keys %SyncFSFile::by_status_time) {
+	my $h = $SyncFSFile::by_status_time{$status};
+	for my $time (sort { $a <=> $b } keys %$h) {
+	    my $count = 0;
+	    my $h = $h->{$time};
+	    for my $file (values %$h) {
+		$count++;
+	    }
+	    print "$status " . ($time0 - $time) . " $count\n";
+	}
+    }
+}
+
 sub new {
     my $class = shift;
     my $path = shift;
+    my $time = time;
 
-    return bless { path => $path, btime => time }, $class;
+    return bless {
+	path => $path,
+	btime => $time,
+	old_by_time => $time,
+	status => "unknown"
+    }, $class;
+}
+
+sub status {
+    my ($self, $newstatus) = @_;
+    return $self->{status} unless defined $newstatus;
+
+    my $status = $self->{status};
+    my $time = $self->{old_by_time};
+    delete $SyncFSFile::by_status_time{$status}{$time}{$self};
+    if (scalar keys %{$SyncFSFile::by_status_time{$status}{$time}} == 0) {
+	delete $SyncFSFile::by_status_time{$status}{$time};
+    }
+
+    $self->{status} = $newstatus;
+
+    $SyncFSFile::by_status_time{$newstatus}{$time}{$self} = $self;
+
+    return $newstatus;
+}
+
+sub old_by_time {
+    my ($self, $newtime) = @_;
+    return $self->{old_by_time} unless defined $newtime;
+
+    my $status = $self->{status};
+    my $time = $self->{old_by_time};
+    delete $SyncFSFile::by_status_time{$status}{$time}{$self};
+    if (scalar keys %{$SyncFSFile::by_status_time{$status}{$time}} == 0) {
+	delete $SyncFSFile::by_status_time{$status}{$time};
+    }
+
+    $self->{old_by_time} = $newtime;
+
+    $SyncFSFile::by_status_time{$status}{$newtime}{$self} = $self;
+
+    return $newtime;
 }
 
 sub touch {
-    my ($self, $h, $done) = @_;
+    my ($self, $h, $done, $delay) = @_;
     $self->{time} = time;
     if ($h->{command} eq "write" and !$done) {
 	$self->{modbytes} += $h->{size} + length $h->{path};
@@ -19,15 +76,18 @@ sub touch {
 	my $cmdline = $h->{cmdline}->[0];
 	$self->{cmdlines}->{$cmdline} = $cmdline;
     } elsif (($h->{command} eq "write") and $done) {
-	$self->{status} = "written";
+	$self->status("written");
+	$self->old_by_time(time + $delay);
     } elsif (($h->{command} eq "create") and $done) {
-	$self->{status} = "written";
+	$self->status("written");
+	$self->old_by_time(time + $delay);
     } elsif (($h->{command} eq "unlink") and $done) {
-	$self->{status} = "deleted";
+	$self->status("deleted");
+	$self->old_by_time(time + $delay);
     } elsif (($h->{command} eq "unlink") and !$done) {
-	delete $self->{status};
+	$self->status("unknown");
     } elsif (($h->{command} eq "rename") and !$done) {
-	delete $self->{status};
+	$self->status("unknown");
     }
 }
 
@@ -35,9 +95,9 @@ sub touch_renamed_to {
     my ($self, $h, $done) = @_;
     $self->{time} = time;
     if (!$done) {
-	delete $self->{status};
+	$self->status("unknown");
     } else {
-	$self->{status} = "written";
+	$self->status("written");
     }
 }
 
@@ -70,7 +130,8 @@ sub message {
 sub sync {
     my $self = shift;
     $self->{modbytes} = 0;
-    delete $self->{status};
+    $self->status("synched");
+    $self->old_by_time(0);
 }
 
 package main;
@@ -107,7 +168,7 @@ sub del_files {
     my @files;
     my $message = "";
     for my $file (sort { $b->score <=> $a->score } values %files) {
-	next if $file->{status} ne "deleted";
+	next if $file->status ne "deleted";
 	if ($i++ == $maxfiles) {
 	    $timer_needed = 1;
 	    last;
@@ -126,6 +187,8 @@ sub del_files {
 	    }
 	};
 
+	warn $@ if $@;
+
 	return 1;
     }
 
@@ -133,13 +196,15 @@ sub del_files {
 }
 
 sub add_files {
+    my %opts = @_;
     my $stdin = "";
     my $maxfiles = 1024;
     my $i = 0;
     my @files;
     my $message = "";
     for my $file (sort { $b->score <=> $a->score } values %files) {
-	next if $file->{status} ne "written";
+	next if $file->status ne "written";
+	next if $opts{nolarge} and $file->{modbytes} > 1024 * 1024;
 	last if $file->score == 0;
 	if ($i++ == $maxfiles) {
 	    $timer_needed = 1;
@@ -180,18 +245,26 @@ sub resolve_starid {
     };
 }
 
+my %editors = (
+    "emacs",
+    "vi",
+    "vim",
+    );
+
 sub update_score {
     my ($h, $done) = @_;
     if (!exists $files{$h->{path}}) {
 	$files{$h->{path}} = new SyncFSFile($h->{path});
     }
     my $file = $files{$h->{path}};
-    $file->touch($h, $done);
-    if (($file->{status} eq "written") and ($file->{cmdlines}->{emacs})) {
-	return 0;
-    } else {
-	return 5;
+    my $delay = 5;
+    for my $cmdline (values %{$file->{cmdlines}}) {
+	for my $cmd (split "/", $cmdline) {
+	    $delay = 0 if $editors{$cmd};
+	}
     }
+    $file->touch($h, $done, $delay);
+    return $delay;
 }
 
 sub update_rename_score {
@@ -236,10 +309,12 @@ my $timer_last_run = 0;
 my $timer_running = 0;
 
 sub run_timer {
+    my %opts = @_;
+    SyncFSFile::status_time_stats;
     $timer_last_run = time;
     return if ($timer_running);
     $timer_running = 1;
-    if (add_files() || del_files()) {
+    if (add_files(%opts) || del_files(%opts)) {
     # contact_sync_host("10.4.0.1");
 	print $notifyfh `pwd`;
 	flush $notifyfh;
@@ -253,16 +328,17 @@ my $timer;
 sub check_timer;
 sub check_timer {
     my $time = time;
-    if ($time - $timer_last_started > 5) {
+    if ($time >= $timer_last_started + 5) {
 	$timer_needed = 0;
 	$timer_last_started = $time;
 	run_timer;
     } elsif ($time - $timer_last_run > 60) {
 	$timer_needed = 0;
 	$timer_last_started = $time;
-	run_timer;
+	run_timer(nolarge => 1);
     }
     $timer = AE::timer 5, 0, sub { check_timer };
+    $timer_last_started = $time;
 }
 
 my $cv = AnyEvent->condvar();
@@ -273,7 +349,6 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
 	    my $delay;
-	    print $line . "\n";
 	    if ($line ne "") {
 		$hash = Mojo::JSON::decode_json($line);
 		resolve_starid($hash);
@@ -295,15 +370,17 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	    }
 
 	    if ($delay == 0) {
-		run_timer;
+		run_timer(nolarge => 1);
 		$timer = AE::timer 5, 0, sub {
 		    check_timer;
-		}
+		};
+		$timer_last_started = time;
 	    } else {
 		check_timer;
 		$timer = AE::timer 5, 0, sub {
 		    check_timer;
-		}
+		};
+		$timer_last_started = time;
 	    }
 			    });
     },

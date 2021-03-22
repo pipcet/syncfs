@@ -1,0 +1,4 @@
+#!/bin/bash
+cp lower/.git/config lower/.git-config
+rm -rf lower/.git
+(cd lower; git init; mv .git-config .git/config; git branch -M main; git add .; git commit -m 'reinit')

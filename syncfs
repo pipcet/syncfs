@@ -11,20 +11,23 @@ push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifo-notify", $remote]);
 push @ps, start(["perl", "$path/syncfs-secondary.pl"]);
 push @ps, start([$path . "a.out", "lower", "mount", "fifo", "fifo-out", "fifo-notify"]);
 
-$SIG{INT} = sub {
+sub terminate {
     for my $p (@ps) {
 	$p->kill_kill;
     }
-    run(["sudo", "umount", "mount"]);
+    while (!run(["sudo", "umount", "mount"], \$stdin, \$stdout, \$stderr) &&
+	   ($stderr !~ /not mounted/)) {
+	sleep 1;
+    }
     exit 0;
+}
+
+$SIG{INT} = sub {
+    terminate;
 };
 
 $SIG{TERM} = sub {
-    for my $p (@ps) {
-	$p->kill_kill;
-    }
-    run(["sudo", "umount", "mount"]);
-    exit 0;
+    terminate;
 };
 
 while (1) {
