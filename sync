@@ -31,7 +31,8 @@ push @ps, start(["perl", "$path/syncfs-secondary.pl", $remote]);
 sleep 1;
 push @ps, start(["perl", "$path/syncfs-lowerer.pl", $localn, $remote]);
 sleep 1;
-push @ps, start(["perl", "$path/syncfs-colowerer.pl", $localn, $remote]);
+# disabled; overlayfs is buggy
+# push @ps, start(["perl", "$path/syncfs-colowerer.pl", $localn, $remote]);
 sleep 1;
 
 sub terminate {

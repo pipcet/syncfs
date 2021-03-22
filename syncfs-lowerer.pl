@@ -11,6 +11,7 @@ my $remote = shift;
 chdir "c00git";
 while (<$fifo>) {
     chomp;
+    next; # automatic lowering is disabled because overlayfs is buggy.
     my $path = $_;
     next unless -e $path;
     my $rev = `git rev-parse HEAD`;
