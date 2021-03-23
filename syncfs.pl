@@ -260,6 +260,7 @@ my $lowerer_handle;
 my $lowerer_fh;
 
 sub lower_files {
+    return 0; # disabled; overlayfs is buggy
     my %opts = @_;
     my $maxfiles = 32;
     my @files;
@@ -415,7 +416,6 @@ my $hdl; $hdl = new AnyEvent::Handle(
     on_read => sub {
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
-	    warn "$line";
 	    my $delay;
 	    if ($line ne "") {
 		$hash = Mojo::JSON::decode_json($line);

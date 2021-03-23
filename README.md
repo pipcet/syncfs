@@ -18,4 +18,4 @@ newly-lowered file.
 
 * TODO change notification format to be either a commit or a commit->commit rewrite
 * TODO handle commit->commit rewrites somehow
-* TODO find Emacs auto-revert-mode bug. Does it still hap
+* TODO find Emacs auto-revert-mode bug. Does it still happen?

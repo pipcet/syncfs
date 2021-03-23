@@ -173,24 +173,18 @@ static void fs_delete_recursively_at(int fd, std::string path)
   ::unlinkat(fd, path.c_str(), AT_REMOVEDIR);
 }
 
-static int root_fd;
+static int root_fd_reading;
+static int root_fd_writing;
 static char *root_path;
 
-static int fd_from_inode(fuse_ino_t ino)
-{
-  if (ino == 1)
-    return root_fd;
-  return (int) ino;
-}
-
 static int syncfs_getattr(const char *path_str,
-			struct stat *statp,
-			fuse_file_info* fi_may_be_null)
+			  struct stat *statp,
+			  fuse_file_info* fi_may_be_null)
 {
   try {
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
-    int ret = fstatat(root_fd, path.c_str(), statp, AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
+    int ret = fstatat(root_fd_reading, path.c_str(), statp, AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
     if (ret < 0)
       throw Errno();
     return 0;
@@ -203,7 +197,7 @@ static int syncfs_readlink(const char *path_str, char *buf, size_t size)
 {
   try {
     Path path(path_str);
-    ssize_t ret = ::readlinkat(root_fd, path.c_str(), buf, size);
+    ssize_t ret = ::readlinkat(root_fd_reading, path.c_str(), buf, size);
     if (ret < 0)
       throw Errno();
     if (ret == size)
@@ -222,7 +216,7 @@ static int syncfs_mkdir(const char *path_str, mode_t mode)
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     mode |= S_IFDIR;
     fifo->request("mkdir", path, strlen(path.c_str()));
-    int ret = ::mkdirat(root_fd, path.c_str(), mode);
+    int ret = ::mkdirat(root_fd_writing, path.c_str(), mode);
     fifo->request_done();
     if (ret < 0)
       throw Errno();
@@ -238,7 +232,7 @@ static int syncfs_rmdir(const char *path_str)
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("rmdir", path, strlen(path.c_str()));
-    int ret = ::unlinkat(root_fd, path.c_str(), AT_REMOVEDIR);
+    int ret = ::unlinkat(root_fd_writing, path.c_str(), AT_REMOVEDIR);
     fifo->request_done();
     if (ret < 0)
       throw Errno();
@@ -255,7 +249,7 @@ static int syncfs_unlink(const char *path_str)
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
     fifo->request("unlink", path, size);
-    int ret = ::unlinkat(root_fd, path.c_str(), 0);
+    int ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
     fifo->request_done();
     if (ret < 0)
       throw Errno();
@@ -269,7 +263,8 @@ static bool is_symlink(Path path)
 {
   try {
     struct stat statbuf;
-    int res = ::fstatat(root_fd, path.c_str(), &statbuf, AT_SYMLINK_NOFOLLOW);
+    int res = ::fstatat(root_fd_reading, path.c_str(), &statbuf,
+			AT_SYMLINK_NOFOLLOW);
     if (res || !S_ISLNK(statbuf.st_mode))
       return 0;
     return 1;
@@ -279,13 +274,13 @@ static bool is_symlink(Path path)
 }
 
 static int syncfs_chmod(const char *path_str, mode_t mode,
-		      fuse_file_info *fi)
+			fuse_file_info *fi)
 {
   try {
     Path path(path_str);
     if (is_symlink(path))
       return 0;
-    int res = ::fchmodat(root_fd, path.c_str(), mode, 0);
+    int res = ::fchmodat(root_fd_writing, path.c_str(), mode, 0);
     if (res < 0)
       throw Errno();
     return res;
@@ -295,13 +290,13 @@ static int syncfs_chmod(const char *path_str, mode_t mode,
 }
 
 static int syncfs_chown(const char *path_str, uid_t uid, gid_t gid,
-		      fuse_file_info *fi)
+			fuse_file_info *fi)
 {
   try {
     Path path(path_str);
     if (is_symlink(path))
       return 0;
-    int res = ::fchownat(root_fd, path.c_str(), uid, gid, 0);
+    int res = ::fchownat(root_fd_writing, path.c_str(), uid, gid, 0);
     if (res < 0)
       throw Errno();
     return res;
@@ -311,10 +306,10 @@ static int syncfs_chown(const char *path_str, uid_t uid, gid_t gid,
 }
 
 static int syncfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
-			off_t offset, fuse_file_info *, enum fuse_readdir_flags)
+			  off_t offset, fuse_file_info *, enum fuse_readdir_flags)
 {
     Path path(path_str);
-  DIR *dir = ::fdopendir (openat (root_fd, path.c_str(), O_DIRECTORY));
+  DIR *dir = ::fdopendir (openat (root_fd_reading, path.c_str(), O_DIRECTORY));
   if (!dir)
     return -errno;
   struct dirent *dirent;
@@ -341,7 +336,7 @@ static int syncfs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
     fifo->request("create", path, size);
-    int fd = ::openat(root_fd, path.c_str(), O_CREAT|fi->flags, mode);
+    int fd = ::openat(root_fd_writing, path.c_str(), O_CREAT|fi->flags, mode);
     fifo->request_done();
     if (fd < 0)
       throw Errno();
@@ -355,7 +350,7 @@ static int syncfs_create(const char *path_str, mode_t mode, fuse_file_info *fi)
 static int syncfs_open(const char *path_str, fuse_file_info *fi)
 {
     Path path(path_str);
-  int fd = ::openat(root_fd, path.c_str(), fi->flags);
+  int fd = ::openat(root_fd_reading, path.c_str(), fi->flags);
   if (fd < 0)
     return -errno;
   fi->fh = fd;
@@ -368,7 +363,7 @@ static int syncfs_utimens(const char *path_str, const struct timespec tv[2],
   Path path(path_str);
   if (is_symlink(path))
     return 0;
-  int fd = ::utimensat(root_fd, path.c_str(), tv, 0);
+  int fd = ::utimensat(root_fd_writing, path.c_str(), tv, 0);
   if (fd < 0)
     return -errno;
   return 0;
@@ -585,7 +580,7 @@ static int syncfs_symlink(const char *target, const char *path_str)
     Path path(path_str);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("symlink", path, strlen(target));
-    int ret = ::symlinkat(target, root_fd, path.c_str());
+    int ret = ::symlinkat(target, root_fd_writing, path.c_str());
     fifo->request_done();
     if (ret < 0)
       throw Errno();
@@ -601,7 +596,7 @@ static int syncfs_link(const char *path1, const char *path_str)
     Path path(path_str);
     while (path1[0] == '/')
       path1++;
-    int ret = ::linkat(root_fd, path1,
+    int ret = ::linkat(root_fd_writing, path1,
 		       AT_FDCWD, path.c_str(), 0);
     if (ret < 0)
       throw Errno();
@@ -620,8 +615,8 @@ static int syncfs_rename(const char *path_str, const char *path2_str,
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     size_t size = 0;
     fifo->request2("rename", path, path2, strlen(path.c_str()));
-    int ret = ::renameat2(root_fd, path.c_str(),
-			  root_fd, path2.c_str(),
+    int ret = ::renameat2(root_fd_writing, path.c_str(),
+			  root_fd_writing, path2.c_str(),
 			  0);
     fifo->request_done();
     if (ret < 0)
@@ -659,15 +654,17 @@ static struct fuse_operations syncfs_operations = {
 
 int main(int argc, char **argv)
 {
-  const char *fifos = strdup(argv[3]);
+  const char *fifos = strdup(argv[4]);
   int fifos_fd = open(fifos, O_DIRECTORY);
   int fifo_in_fd = openat(fifos_fd, "fuse-to-daemon", O_WRONLY);
   int fifo_out_fd = openat(fifos_fd, "daemon-to-fuse", O_RDONLY);
   FIFO *fifo = new FIFO(fifo_in_fd, fifo_out_fd);
-  int lower_fd = open(argv[1], O_RDONLY|O_PATH);
-  if (lower_fd < 0)
+  root_fd_reading = open(argv[1], O_RDONLY|O_PATH);
+  if (root_fd_reading < 0)
     abort();
-  root_fd = lower_fd;
+  root_fd_writing = open(argv[2], O_RDONLY|O_PATH);
+  if (root_fd_writing < 0)
+    abort();
   root_path = strdup(argv[1]);
   struct rlimit limit;
   if (getrlimit(RLIMIT_NOFILE, &limit) == 0) {
@@ -685,7 +682,7 @@ int main(int argc, char **argv)
   //  abort();
   fuse *fuse = fuse_new (&args, &syncfs_operations, sizeof(syncfs_operations),
 			 fifo);
-  fuse_mount(fuse, argv[2]);
+  fuse_mount(fuse, argv[3]);
 
   fuse_loop(fuse);
   //fuse_set_signal_handlers(session);

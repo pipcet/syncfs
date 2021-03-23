@@ -1,5 +1,8 @@
 all: a.out syncfs_mount c00fs c00gitfs
 
+clean:
+	rm -f a.out syncfs_mount c00fs c00gitfs
+
 a.out: syncfs_mount
 	cp $< $@
 

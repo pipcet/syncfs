@@ -7,7 +7,7 @@ use AnyEvent::Handle;
 my $remote = shift;
 
 sub handle_line {
-    run(["sh", "-c", "cd c00git; git pull $remote main"]);
+    run(["sh", "-c", "cd c00git; git pull $remote main; git commit -m merge"]);
 }
 
 my $fh1;
