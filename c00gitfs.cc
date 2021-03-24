@@ -46,6 +46,17 @@
 class Path {
 public:
   std::string path;
+  Path(std::string dir, std::string base)
+  {
+    const char *str = dir.c_str();
+    while (str[0] == '/')
+      str++;
+    char *newstr =
+      (char *)malloc(strlen(str) + 1 + strlen(base.c_str()) + 1);
+    sprintf(newstr, "%s/%s", str, base.c_str());
+    path = std::string(newstr);
+  }
+
   Path(std::string inpath)
   {
     const char *str = inpath.c_str();
@@ -54,6 +65,11 @@ public:
     char *newstr = strdup(str[0] ? str : ".");
 
     path = std::string(newstr);
+  }
+
+  ~Path()
+  {
+    //free((void *)const_cast<char *>(path.c_str()));
   }
 
   const char *c_str()
@@ -172,8 +188,15 @@ static int c00gitfs_mkdir(const char *path_str, mode_t mode)
     Path path(path_str);
     mode |= S_IFDIR;
     int ret = ::mkdirat(root_fd_writing, path.c_str(), mode);
-    if (ret < 0)
+    if (ret < 0) {
+      if (errno == EEXIST) {
+	Path dotdir(path_str, ".dir");
+	::close(::openat(root_fd_writing, dotdir.c_str(), O_CREAT|O_RDWR,
+			 0660));
+	return 0;
+      }
       throw Errno();
+    }
     return 0;
   } catch (Errno error) {
     return -error.error;
@@ -197,7 +220,11 @@ static int c00gitfs_unlink(const char *path_str)
 {
   try {
     Path path(path_str);
-    size_t size = 0;
+    if (is_whiteout(path)) {
+      /* We can't do anything useful here. */
+      ::close(::openat(root_fd_writing, path.c_str(), O_CREAT, 0660));
+      return 0;
+    }
     int ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
     if (ret < 0)
       throw Errno();
@@ -242,7 +269,7 @@ static int c00gitfs_chown(const char *path_str, uid_t uid, gid_t gid,
 static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t filler,
 			off_t offset, fuse_file_info *, enum fuse_readdir_flags)
 {
-    Path path(path_str);
+  Path path(path_str);
   DIR *dir = ::fdopendir (openat (root_fd_reading, path.c_str(), O_DIRECTORY));
   if (!dir)
     return -errno;
@@ -272,6 +299,7 @@ static int c00gitfs_create(const char *path_str, mode_t mode, fuse_file_info *fi
   try {
     Path path(path_str);
     size_t size = 0;
+    fi->flags &= ~O_EXCL;
     int fd = ::openat(root_fd_writing, path.c_str(), O_CREAT|fi->flags, mode);
     if (fd < 0)
       throw Errno();
@@ -290,6 +318,7 @@ static int c00gitfs_open(const char *path_str, fuse_file_info *fi)
     if ((fi->flags|O_RDWR) == fi->flags ||
 	(fi->flags|O_WRONLY) == fi->flags)
       rfd = root_fd_writing;
+    fi->flags &= ~O_EXCL;
     int fd = ::openat(rfd, path.c_str(), fi->flags);
     if (fd < 0)
       throw Errno();

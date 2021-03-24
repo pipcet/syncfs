@@ -33,7 +33,7 @@ sleep 1;
 push @ps, start(["$path/$arch/syncfs", "merge", "merge", "mount", "fifos"]);
 push @fs, "mount";
 sleep 1;
-push @ps, start(["perl", "$path/syncfs.pl", "fifos"]);
+push @ps, start(["node", "$path/syncfs.mjs", "fifos", $remote]);
 sleep 1;
 push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifos", $remote]);
 sleep 1;
