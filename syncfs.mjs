@@ -204,9 +204,11 @@ async function main()
 	    timerRunning = true;
 	    console.log(`adding files`);
 	    let rev;
-	    if ((rev = add_files()) !== "" ||
-		(rev = del_files()) !== "")
+	    if ((rev = await add_files()) !== "" ||
+		(rev = await del_files()) !== "") {
 		notify(rev);
+		timerTriggered = true;
+	    }
 	    timerRunning = false;
 	}
     }
