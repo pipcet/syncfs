@@ -28,3 +28,16 @@ synchronized file systems simultaneously.
   - git commit --allow-empty -m 'initial empty commit'
   - git add .
   - git commit --allow-empty -m 'initial commit'
+
+- Sync up the other devices
+  - stop syncfs
+  - rsync --rsh=ssh ONEDEVICE:sync/data/lower/ sync/data/lower/
+  - start syncfs
+  - cd SYNCDIR/c00git
+  - git fetch --all
+  - git diff HEAD REMOTE/main
+  - git reset --hard REMOTE/main
+  - git reflog expire --all --expire=all
+  - rm -f .git/ORIG_HEAD
+  - git gc --prune=now --aggressive
+  - du -s .git
