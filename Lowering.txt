@@ -7,7 +7,7 @@ synchronized file systems simultaneously.
 
 - make double sure that you're not about to lose data
 
-- mv SYNCDIR/data/lower/DIRECTORY SYNCDIR/data/upper/
+- mv SYNCDIR/data/upper/DIRECTORY SYNCDIR/data/lower/
 
 - restart syncfs
 

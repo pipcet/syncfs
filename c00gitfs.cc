@@ -506,8 +506,6 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
     else {
       ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
       ret = 0;
-    } else {
-      ret = ::symlinkat(target, root_fd_writing, path.c_str());
     }
     if (ret < 0)
       throw Errno();
