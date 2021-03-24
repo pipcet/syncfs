@@ -41,6 +41,8 @@
 #include <mutex>
 #include <thread>
 
+#define WHITEOUT_CHAR ' '
+
 class Path {
 public:
   std::string path;
@@ -132,6 +134,8 @@ static int c00gitfs_getattr(const char *path_str,
       statp->st_mode |= S_IFLNK;
       statp->st_mode |= 0777;
       statp->st_size = 1;
+      statp->st_uid = getuid();
+      statp->st_gid = getgid();
     }
     return 0;
   } catch (Errno error) {
@@ -146,7 +150,7 @@ static int c00gitfs_readlink(const char *path_str, char *buf, size_t size)
     if (is_whiteout(path)) {
       if (size < 2)
 	throw Errno(ENAMETOOLONG);
-      buf[0] = ' ';
+      buf[0] = WHITEOUT_CHAR;
       buf[1] = 0;
       return 0;
     }
@@ -252,6 +256,8 @@ static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fil
       stat.st_mode |= S_IFLNK;
       stat.st_mode |= 0777;
       stat.st_size = 1;
+      stat.st_uid = getuid();
+      stat.st_gid = getgid();
     }
     if (filler (buf, name, &stat, 0, (fuse_fill_dir_flags)FUSE_FILL_DIR_PLUS))
       break;
@@ -500,6 +506,8 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
     else {
       ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
       ret = 0;
+    } else {
+      ret = ::symlinkat(target, root_fd_writing, path.c_str());
     }
     if (ret < 0)
       throw Errno();
