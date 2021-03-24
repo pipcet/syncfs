@@ -175,7 +175,8 @@ static void fs_delete_recursively_at(int fd, std::string path)
 
 static int root_fd_reading;
 static int root_fd_writing;
-static char *root_path;
+static const char *root_path_reading;
+static const char *root_path_writing;
 
 static int syncfs_getattr(const char *path_str,
 			  struct stat *statp,
@@ -384,16 +385,35 @@ static int syncfs_fsync(const char *path_str, int datasync,
 }
 
 static int syncfs_setxattr(const char *path_str, const char *name,
-			 const char *value, size_t size, int flags)
+			   const char *value, size_t size, int flags)
 {
   try {
     Path path(path_str);
+    if (!strcmp(name, "syncfs.detach-for-lowering")) {
+      const char *detach_path = value;
+      int fd = open(detach_path, O_RDWR|O_CREAT, 0666);
+      fprintf (stderr, "detaching for lowering operation");
+      close(root_fd_reading);
+      close(root_fd_writing);
+      while (fd >= 0) {
+	close(fd);
+	sleep(1);
+	fd = open(detach_path, O_RDWR, 0666);
+      }
+      root_fd_reading = open(root_path_reading, O_RDONLY|O_PATH);
+      if (root_fd_reading < 0)
+	abort();
+      root_fd_writing = open(root_path_writing, O_RDONLY|O_PATH);
+      if (root_fd_writing < 0)
+	abort();
+      return 0;
+    }
     const char *prefix = "syncfs.user.";
     char *prefixed_name =
       (char *)malloc (strlen(prefix) + strlen(name) + 1);
     char *real_path =
-      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
-    sprintf(real_path, "%s%s", root_path, path.c_str());
+      (char *)malloc(strlen(root_path_writing) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path_writing, path.c_str());
     sprintf(prefixed_name, "%s%s", prefix, name);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("setattr", path, size);
@@ -417,8 +437,8 @@ static int syncfs_removexattr(const char *path_str, const char *name)
     char *prefixed_name =
       (char *)malloc (strlen(prefix) + strlen(name) + 1);
     char *real_path =
-      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
-    sprintf(real_path, "%s%s", root_path, path.c_str());
+      (char *)malloc(strlen(root_path_writing) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path_writing, path.c_str());
     sprintf(prefixed_name, "%s%s", prefix, name);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("setattr", path, 0);
@@ -443,8 +463,8 @@ static int syncfs_getxattr(const char *path_str, const char *name,
     char *prefixed_name =
       (char *)malloc (strlen(prefix) + strlen(name) + 1);
     char *real_path =
-      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
-    sprintf(real_path, "%s%s", root_path, path.c_str());
+      (char *)malloc(strlen(root_path_reading) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path_reading, path.c_str());
     sprintf(prefixed_name, "%s%s", prefix, name);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
     fifo->request("getattr", path, size);
@@ -466,8 +486,8 @@ static int syncfs_listxattr(const char *path_str, char *buf, size_t size)
     Path path(path_str);
     const char *prefix = "syncfs.user.";
     char *real_path =
-      (char *)malloc(strlen(root_path) + strlen(path.c_str()) + 1);
-    sprintf(real_path, "%s%s", root_path, path.c_str());
+      (char *)malloc(strlen(root_path_reading) + strlen(path.c_str()) + 1);
+    sprintf(real_path, "%s%s", root_path_reading, path.c_str());
     size_t bufsize = 2 * size;
     char *mybuf = (char *)malloc (bufsize);
     FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
@@ -660,13 +680,14 @@ int main(int argc, char **argv)
   int fifo_in_fd = openat(fifos_fd, "fuse-to-daemon", O_WRONLY);
   int fifo_out_fd = openat(fifos_fd, "daemon-to-fuse", O_RDONLY);
   FIFO *fifo = new FIFO(fifo_in_fd, fifo_out_fd);
-  root_fd_reading = open(argv[1], O_RDONLY|O_PATH);
+  root_path_reading = strdup(argv[1]);
+  root_path_writing = strdup(argv[2]);
+  root_fd_reading = open(root_path_reading, O_RDONLY|O_PATH);
   if (root_fd_reading < 0)
     abort();
-  root_fd_writing = open(argv[2], O_RDONLY|O_PATH);
+  root_fd_writing = open(root_path_writing, O_RDONLY|O_PATH);
   if (root_fd_writing < 0)
     abort();
-  root_path = strdup(argv[1]);
   struct rlimit limit;
   if (getrlimit(RLIMIT_NOFILE, &limit) == 0) {
     limit.rlim_cur = limit.rlim_max;

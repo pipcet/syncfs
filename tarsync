@@ -1,0 +1,13 @@
+#!/usr/bin/perl
+use AnyEvent;
+use AnyEvent::Handle;
+
+my $hdl; $hdl = new AnyEvent::Handle(
+    fh => \*STDIN,
+    sub on_read {
+	shift->unshift_read(
+	    line => sub {
+		my ($h, $line) = @_;
+		my ($path, $byte0, $byte1) = split(/\0/, $line);
+		
+    })

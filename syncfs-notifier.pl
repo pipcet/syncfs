@@ -13,12 +13,12 @@ my $hdl; $hdl = new AnyEvent::Handle(
     fh => $fh,
     on_read => sub {
 	shift->unshift_read(line => sub {
-	    warn "notified";
+	    my ($h, $line) = @_;
 	    $timer = AE::timer 1, 0, sub {
 		my $stdin = "";
 		my $stdout = "";
 		my $stderr = "";
-		run(["ssh", $remote, "date", ">>", "sync/syncfs-pings"],
+		run(["ssh", $remote, "echo", "$line", ">>", "sync/syncfs-pings"],
 		    \$stdin, \$stdout, \$stderr) or die $stderr;
 	    };
 			    });

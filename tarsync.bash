@@ -1,0 +1,1 @@
+ssh $REMOTE "(cd $REMOTE_PATH; while read; do git cat-file -e \"\$REPLY\" || echo \"\$REPLY\"; done)" | while read; do echo $REPLY | git pack-objects --stdout --all-progress | ssh $REMOTE "(cd $REMOTE_PATH; git unpack-objects)"; done

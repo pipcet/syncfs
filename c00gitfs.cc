@@ -109,7 +109,7 @@ static bool is_whiteout(Path path)
 {
   char link[256];
   struct stat statbuf;
-  int res = ::fstatat(root_fd_writing, path.c_str(), &statbuf,
+  int res = ::fstatat(root_fd_reading, path.c_str(), &statbuf,
 		      AT_SYMLINK_NOFOLLOW);
   if (res < 0)
     return 0;
@@ -130,6 +130,8 @@ static int c00gitfs_getattr(const char *path_str,
 	minor(statp->st_rdev) == 0) {
       statp->st_mode &= ~S_IFMT;
       statp->st_mode |= S_IFLNK;
+      statp->st_mode |= 0777;
+      statp->st_size = 1;
     }
     return 0;
   } catch (Errno error) {
@@ -244,10 +246,12 @@ static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fil
   while (dirent = ::readdir (dir)) {
     char *name = dirent->d_name;
     struct stat stat;
-    ::fstatat(dirfd(dir), name, &stat, 0);
+    ::fstatat(dirfd(dir), name, &stat, AT_SYMLINK_NOFOLLOW);
     if (S_ISCHR(stat.st_mode) && stat.st_rdev == 0) {
       stat.st_mode &= ~S_IFMT;
       stat.st_mode |= S_IFLNK;
+      stat.st_mode |= 0777;
+      stat.st_size = 1;
     }
     if (filler (buf, name, &stat, 0, (fuse_fill_dir_flags)FUSE_FILL_DIR_PLUS))
       break;
@@ -296,7 +300,7 @@ static int c00gitfs_utimens(const char *path_str, const struct timespec tv[2],
   Path path(path_str);
   if (is_symlink(path))
     return 0;
-  int fd = ::utimensat(root_fd_writing, path.c_str(), tv, 0);
+  int fd = ::utimensat(root_fd_writing, path.c_str(), tv, AT_SYMLINK_NOFOLLOW);
   if (fd < 0)
     return -errno;
   return 0;
@@ -494,7 +498,7 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
     if (strcmp(target, " "))
       ret = ::symlinkat(target, root_fd_writing, path.c_str());
     else {
-      ret = ::mknodat(root_fd_writing, path.c_str(), S_IFCHR, 0);
+      ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
       ret = 0;
     }
     if (ret < 0)
@@ -551,6 +555,7 @@ static struct fuse_operations c00gitfs_operations = {
   .chmod = c00gitfs_chmod,
   .chown = c00gitfs_chown,
   .open = c00gitfs_open,
+  .release = c00gitfs_release,
   .fsync = c00gitfs_fsync,
   //.setxattr = syncfs_setxattr,
   //.getxattr = syncfs_getxattr,

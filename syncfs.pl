@@ -97,6 +97,14 @@ sub touch {
     } elsif (($h->{command} eq "write") and $done) {
 	$self->status("written");
 	$self->old_by_time(time + $delay);
+    } elsif ($h->{command} eq "symlink" and !$done) {
+	$self->{modbytes} += $h->{size} + length $h->{path};
+	$self->{edited_by}->{$h->{user}}++;
+	my $cmdline = $h->{cmdline}->[0];
+	$self->{cmdlines}->{$cmdline} = $cmdline;
+    } elsif (($h->{command} eq "symlink") and $done) {
+	$self->status("written");
+	$self->old_by_time(time + $delay);
     } elsif (($h->{command} eq "create") and $done) {
 	$self->status("written");
 	$self->old_by_time(time + $delay);
@@ -207,12 +215,10 @@ sub del_files {
     if (@files) {
 	my $stdin = join("\0", map { $_->path } @files) . "\0";
 	eval {
-	    chdir("../merge");
 	    my $succ = run(["git", "rm", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin);
 	    if ($succ) {
 		$succ = run(["git", "commit", "--allow-empty", "-m", substr($message, 0, 1024)]);
 	    }
-	    chdir("../c00git");
 	    for my $file (@files) {
 		$file->sync;
 	    }
@@ -247,12 +253,16 @@ sub add_files {
 
     if (@files) {
 	my $stdin = join("\0", map { $_->path } @files) . "\0";
-	chdir("../merge");
 	my $succ = run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin);
 	if ($succ) {
 	    $succ = run(["git", "commit", "--allow-empty", "-m", $message]);
 	}
-	chdir("../c00git");
+	my $rev = "";
+	if ($succ) {
+	    $stdin = "";
+	    $succ = run(["git", "rev-parse", "HEAD"], \$stdin, \$rev);
+	    chomp $rev;
+	}
 	if (!$succ) {
 	    die;
 	}
@@ -368,7 +378,7 @@ sub contact_sync_host {
     my $stdout = "";
     my $stderr = "";
     my $stdin = "";
-    run(["ssh", "$host", "echo", "foo", ">>", "syncfs/syncfs-pings"], \$stdin, \$stdout, \$stderr);
+    run(["ssh", "$host", "echo", "foo", ">>", "sync/syncfs-pings"], \$stdin, \$stdout, \$stderr);
 }
 
 my $synctime = 0;
@@ -387,14 +397,17 @@ my $timer_running = 0;
 
 sub run_timer {
     my %opts = @_;
-    SyncFSFile::status_time_stats;
+    # SyncFSFile::status_time_stats;
     $timer_last_run = time;
     return if ($timer_running);
     $timer_running = 1;
     eval {
-	if (add_files(%opts) || del_files(%opts) || lower_files(%opts)) {
-	    # contact_sync_host("10.4.0.1");
-	    print $notifyfh `pwd`;
+	my $rev;
+	if (($rev = add_files(%opts)) ||
+	    ($rev = del_files(%opts))
+	    # || ($rev = lower_files(%opts))
+	    ) {
+	    print $notifyfh $rev . "\n";
 	    flush $notifyfh;
 	}
     };
@@ -428,7 +441,7 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
 	    my $delay;
-	    warn $line;
+	    warn "$line\n" if $line ne "";
 	    if ($line ne "") {
 		$hash = Mojo::JSON::decode_json($line);
 		resolve_starid($hash);

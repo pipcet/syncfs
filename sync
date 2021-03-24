@@ -1,27 +1,37 @@
 #!/usr/bin/perl
+use strict;
 use IPC::Run qw(start run);
 
 mkdir("fifos");
 system("mkfifo fifos/fuse-to-daemon fifos/daemon-to-fuse fifos/daemon-to-notify fifos/daemon-to-lowerer");
-mkdir("work");
 
-mkdir("lower");
-mkdir("upper");
+mkdir("data");
+mkdir("data/lower");
+mkdir("data/upper");
+mkdir("data/work");
 mkdir("merge");
 mkdir("mount");
 mkdir("c00git");
 system("echo > syncfs-pings");
 
 my @ps;
+my @fs;
 my $path = shift;
+my $arch = `uname -m`;
+chomp $arch;
 
-# run(["sudo", "mount", "-toverlay", "-olowerdir=lower,upperdir=upper,workdir=work,rw", "overlay", "merge"]) or die;
-# push @ps, start(["$path/c00gitfs", "upper", "merge", "c00git"]);
-sleep 1;
 my $remote = shift;
 my $localn = ($remote eq "10.4.0.1") ? "10.4.0.2" : "10.4.0.1";
-system("cd upper; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config pull.rebase false; git remote add $remote $remote:sync/upper");
-push @ps, start(["$path/syncfs", "upper", "upper", "mount", "fifos"]);
+system("cd data/upper; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config core.compression 0; git config pull.rebase false; git remote add $remote $remote:sync/c00git");
+
+run(["sudo", "mount", "-toverlay", "-olowerdir=data/lower,upperdir=data/upper,workdir=data/work,rw", "overlay", "merge"]) or die;
+push @fs, "merge";
+push @ps, start(["$path/$arch/c00gitfs", "data/upper", "merge", "c00git"]);
+push @fs, "c00git";
+sleep 1;
+# not currently used.
+push @ps, start(["$path/$arch/syncfs", "merge", "merge", "mount", "fifos"]);
+push @fs, "mount";
 sleep 1;
 push @ps, start(["perl", "$path/syncfs.pl", "fifos"]);
 sleep 1;
@@ -39,18 +49,21 @@ sub terminate {
     for my $p (@ps) {
 	$p->kill_kill;
     }
-    while (!run(["sudo", "umount", "mount"], \$stdin, \$stdout, \$stderr) &&
-	   ($stderr !~ /not mounted/)) {
-	sleep 1;
+    while (@fs) {
+	my $fs = shift @fs;
+	my $stdin = "";
+	my $stdout = "";
+	my $stderr = "";
+	run(["sudo", "umount", $fs], \$stdin, \$stdout, \$stderr);
+	if ($stderr =~ /not mounted/) {
+	} else {
+	    warn $stderr if $stderr ne "";
+	    warn $stdout if $stdout ne "";
+	    push @fs, $fs;
+	    sleep 1;
+	}
     }
-    while (!run(["sudo", "umount", "merge"], \$stdin, \$stdout, \$stderr) &&
-	   ($stderr !~ /not mounted/)) {
-	sleep 1;
-    }
-    while (!run(["sudo", "umount", "c00git"], \$stdin, \$stdout, \$stderr) &&
-	   ($stderr !~ /not mounted/)) {
-	sleep 1;
-    }
+    warn "All file systems unmounted. Terminating.";
     exit 0;
 }
 

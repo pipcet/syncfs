@@ -1,0 +1,30 @@
+Data in the "upper" file system layer is managed in git, and thus
+versioned and duplicated. To avoid the storage overhead, you can put
+data into the lower file system directly, but you must do so on all
+synchronized file systems simultaneously.
+
+- Stop syncfs
+
+- make double sure that you're not about to lose data
+
+- mv SYNCDIR/data/lower/DIRECTORY SYNCDIR/data/upper/
+
+- restart syncfs
+
+- cd SYNCDIR/c00git
+
+- git rm -r DIRECTORY
+
+- git commit -m 'lowering'
+
+- Now would be an excellent time to snapshot the .git directory in c00git.
+
+- Destroy all history on one device:
+
+  - cp .git/config .git-config
+  - rm -rf .git
+  - git init
+  - mv .git-config .git/config
+  - git commit --allow-empty -m 'initial empty commit'
+  - git add .
+  - git commit --allow-empty -m 'initial commit'
