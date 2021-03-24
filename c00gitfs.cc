@@ -106,8 +106,10 @@ static void fs_delete_recursively_at(int fd, std::string path)
 
 static int root_fd_reading;
 static int root_fd_writing;
+static int root_fd_restoring;
 static char *root_path_reading;
 static char *root_path_writing;
+static char *root_path_restoring;
 
 static bool is_symlink(Path path)
 {
@@ -123,6 +125,11 @@ static bool is_symlink(Path path)
   }
 }
 
+static bool is_whiteout(struct stat *stat)
+{
+  return S_ISCHR(stat->st_mode) && stat->st_rdev == 0;
+}
+
 static bool is_whiteout(Path path)
 {
   char link[256];
@@ -131,7 +138,19 @@ static bool is_whiteout(Path path)
 		      AT_SYMLINK_NOFOLLOW);
   if (res < 0)
     return 0;
-  return S_ISCHR(statbuf.st_mode) && statbuf.st_rdev == 0;
+  return is_whiteout(&statbuf);
+}
+
+static bool is_whiteout_whiteout(Path path)
+{
+  size_t n = strlen(path.c_str());
+  char str[strlen(".wowo/") + n + 1];
+  sprintf(str, ".wowo/%s", path.c_str());
+  int fd = ::openat(root_fd_writing, str, O_RDONLY);
+  if (fd < 0)
+    return false;
+  ::close(fd);
+  return true;
 }
 
 static int c00gitfs_getattr(const char *path_str,
@@ -144,8 +163,9 @@ static int c00gitfs_getattr(const char *path_str,
 		      AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
     if (ret < 0)
       throw Errno();
-    if (statp->st_mode == S_IFCHR && major(statp->st_rdev) == 0 &&
-	minor(statp->st_rdev) == 0) {
+    if (is_whiteout(statp)) {
+      if (is_whiteout_whiteout(path))
+	throw Errno(ENOENT);
       statp->st_mode &= ~S_IFMT;
       statp->st_mode |= S_IFLNK;
       statp->st_mode |= 0777;
@@ -164,6 +184,8 @@ static int c00gitfs_readlink(const char *path_str, char *buf, size_t size)
   try {
     Path path(path_str);
     if (is_whiteout(path)) {
+      if (is_whiteout_whiteout(path))
+	throw Errno(ENOENT);
       if (size < 2)
 	throw Errno(ENAMETOOLONG);
       buf[0] = WHITEOUT_CHAR;
@@ -221,8 +243,18 @@ static int c00gitfs_unlink(const char *path_str)
   try {
     Path path(path_str);
     if (is_whiteout(path)) {
-      /* We can't do anything useful here. */
-      ::close(::openat(root_fd_writing, path.c_str(), O_CREAT, 0660));
+      if (is_whiteout_whiteout(path))
+	throw Errno(ENOENT);
+      char str[strlen(".wowo/") + strlen(path.c_str()) + 1];
+      sprintf(str, ".wowo/%s", path.c_str());
+      for (char *p = str; *p; p++) {
+	if (*p == '/') {
+	  *p = 0;
+	  ::mkdirat(root_fd_writing, str, 0770);
+	  *p = '/';
+	}
+      }
+      ::mkdirat(root_fd_writing, str, 0770);
       return 0;
     }
     int ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
@@ -276,9 +308,13 @@ static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fil
   struct dirent *dirent;
   while (dirent = ::readdir (dir)) {
     char *name = dirent->d_name;
+    if (!strcmp(name, ".wowo"))
+      continue;
     struct stat stat;
     ::fstatat(dirfd(dir), name, &stat, AT_SYMLINK_NOFOLLOW);
-    if (S_ISCHR(stat.st_mode) && stat.st_rdev == 0) {
+    if (is_whiteout(&stat)) {
+      if (is_whiteout_whiteout(Path(path_str, dirent->d_name)))
+	continue;
       stat.st_mode &= ~S_IFMT;
       stat.st_mode |= S_IFLNK;
       stat.st_mode |= 0777;
@@ -530,10 +566,10 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
   try {
     Path path(path_str);
     int ret;
-    if (strcmp(target, " "))
+    ::unlinkat(root_fd_writing, path.c_str(), 0);
+    if (strcmp(target, " ")) {
       ret = ::symlinkat(target, root_fd_writing, path.c_str());
-    else {
-      ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
+    } else {
       ret = 0;
     }
     if (ret < 0)
@@ -612,8 +648,12 @@ int main(int argc, char **argv)
   root_fd_writing = open(argv[2], O_RDONLY|O_PATH);
   if (root_fd_writing < 0)
     return 1;
+  root_fd_restoring = open(argv[3], O_RDONLY|O_PATH);
+  if (root_fd_restoring < 0)
+    return 1;
   root_path_reading = strdup(argv[1]);
-  root_path_writing = strdup(argv[1]);
+  root_path_writing = strdup(argv[2]);
+  root_path_restoring = strdup(argv[3]);
   struct rlimit limit;
   if (getrlimit(RLIMIT_NOFILE, &limit) == 0) {
     limit.rlim_cur = limit.rlim_max;
@@ -630,7 +670,7 @@ int main(int argc, char **argv)
   //  abort();
   fuse *fuse = fuse_new (&args, &c00gitfs_operations, sizeof(c00gitfs_operations),
 			 nullptr);
-  fuse_mount(fuse, argv[3]);
+  fuse_mount(fuse, argv[4]);
 
   fuse_loop(fuse);
   //fuse_set_signal_handlers(session);
