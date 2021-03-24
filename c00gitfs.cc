@@ -274,12 +274,20 @@ static int c00gitfs_create(const char *path_str, mode_t mode, fuse_file_info *fi
 
 static int c00gitfs_open(const char *path_str, fuse_file_info *fi)
 {
+  try {
     Path path(path_str);
-  int fd = ::openat(root_fd_reading, path.c_str(), fi->flags);
-  if (fd < 0)
-    return -errno;
-  fi->fh = fd;
-  return 0;
+    int rfd = root_fd_reading;
+    if ((fi->flags|O_RDWR) == fi->flags ||
+	(fi->flags|O_WRONLY) == fi->flags)
+      rfd = root_fd_writing;
+    int fd = ::openat(rfd, path.c_str(), fi->flags);
+    if (fd < 0)
+      throw Errno();
+    fi->fh = fd;
+    return 0;
+  } catch (Errno error) {
+    return -error.error;
+  }
 }
 
 static int c00gitfs_utimens(const char *path_str, const struct timespec tv[2],

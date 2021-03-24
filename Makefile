@@ -1,13 +1,10 @@
-all: a.out syncfs_mount c00fs c00gitfs
+all: syncfs c00fs c00gitfs
 
 clean:
-	rm -f a.out syncfs_mount c00fs c00gitfs
+	rm -f syncfs c00fs c00gitfs
 
-a.out: syncfs_mount
-	cp $< $@
-
-syncfs_mount: syncfs.cc
-	g++ -g3 ./syncfs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o syncfs_mount
+syncfs: syncfs.cc
+	g++ -g3 ./syncfs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o syncfs
 
 
 c00fs: c00fs.cc

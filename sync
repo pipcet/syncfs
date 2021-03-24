@@ -15,13 +15,13 @@ system("echo > syncfs-pings");
 my @ps;
 my $path = shift;
 
-run(["sudo", "mount", "-toverlay", "-olowerdir=lower,upperdir=upper,workdir=work,rw", "overlay", "merge"]) or die;
-push @ps, start(["$path/c00gitfs", "upper", "merge", "c00git"]);
+# run(["sudo", "mount", "-toverlay", "-olowerdir=lower,upperdir=upper,workdir=work,rw", "overlay", "merge"]) or die;
+# push @ps, start(["$path/c00gitfs", "upper", "merge", "c00git"]);
 sleep 1;
 my $remote = shift;
 my $localn = ($remote eq "10.4.0.1") ? "10.4.0.2" : "10.4.0.1";
-system("cd c00git; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config pull.rebase false; git remote add $remote $remote:sync/c00git");
-push @ps, start(["$path/syncfs_mount", "merge", "merge", "mount", "fifos"]);
+system("cd upper; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config pull.rebase false; git remote add $remote $remote:sync/upper");
+push @ps, start(["$path/syncfs", "upper", "upper", "mount", "fifos"]);
 sleep 1;
 push @ps, start(["perl", "$path/syncfs.pl", "fifos"]);
 sleep 1;

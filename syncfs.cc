@@ -316,7 +316,7 @@ static int syncfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fille
   while (dirent = ::readdir (dir)) {
     char *name = dirent->d_name;
     struct stat stat;
-    ::fstatat(dirfd(dir), name, &stat, 0);
+    ::fstatat(dirfd(dir), name, &stat, AT_SYMLINK_NOFOLLOW);
     if (name[0] == ',')
       name[0] = '.';
     else if (name[0] == '.' && (strcmp(name, ".")) && (strcmp(name, "..")))
@@ -639,6 +639,7 @@ static struct fuse_operations syncfs_operations = {
   .chmod = syncfs_chmod,
   .chown = syncfs_chown,
   .open = syncfs_open,
+  .release = syncfs_release,
   .fsync = syncfs_fsync,
   //.setxattr = syncfs_setxattr,
   //.getxattr = syncfs_getxattr,

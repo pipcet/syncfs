@@ -207,8 +207,12 @@ sub del_files {
     if (@files) {
 	my $stdin = join("\0", map { $_->path } @files) . "\0";
 	eval {
-	    run(["git", "rm", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
-	    run(["git", "commit", "--allow-empty", "-m", $message]) or die;
+	    chdir("../merge");
+	    my $succ = run(["git", "rm", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin);
+	    if ($succ) {
+		$succ = run(["git", "commit", "--allow-empty", "-m", substr($message, 0, 1024)]);
+	    }
+	    chdir("../c00git");
 	    for my $file (@files) {
 		$file->sync;
 	    }
@@ -243,8 +247,15 @@ sub add_files {
 
     if (@files) {
 	my $stdin = join("\0", map { $_->path } @files) . "\0";
-	run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin) or die;
-	run(["git", "commit", "--allow-empty", "-m", $message]) or die;
+	chdir("../merge");
+	my $succ = run(["git", "add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"], \$stdin);
+	if ($succ) {
+	    $succ = run(["git", "commit", "--allow-empty", "-m", $message]);
+	}
+	chdir("../c00git");
+	if (!$succ) {
+	    die;
+	}
 	for my $file (@files) {
 	    $file->sync;
 	}
@@ -417,6 +428,7 @@ my $hdl; $hdl = new AnyEvent::Handle(
 	shift->unshift_read(line => sub {
 	    my ($h, $line) = @_;
 	    my $delay;
+	    warn $line;
 	    if ($line ne "") {
 		$hash = Mojo::JSON::decode_json($line);
 		resolve_starid($hash);
