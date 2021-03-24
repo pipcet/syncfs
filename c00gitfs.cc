@@ -41,6 +41,8 @@
 #include <mutex>
 #include <thread>
 
+#define WHITEOUT_CHAR ' '
+
 class Path {
 public:
   std::string path;
@@ -109,7 +111,7 @@ static bool is_whiteout(Path path)
 {
   char link[256];
   struct stat statbuf;
-  int res = ::fstatat(root_fd_writing, path.c_str(), &statbuf,
+  int res = ::fstatat(root_fd_reading, path.c_str(), &statbuf,
 		      AT_SYMLINK_NOFOLLOW);
   if (res < 0)
     return 0;
@@ -130,6 +132,10 @@ static int c00gitfs_getattr(const char *path_str,
 	minor(statp->st_rdev) == 0) {
       statp->st_mode &= ~S_IFMT;
       statp->st_mode |= S_IFLNK;
+      statp->st_mode |= 0777;
+      statp->st_uid = getuid();
+      statp->st_gid = getgid();
+      statp->st_size = 2;
     }
     return 0;
   } catch (Errno error) {
@@ -144,7 +150,7 @@ static int c00gitfs_readlink(const char *path_str, char *buf, size_t size)
     if (is_whiteout(path)) {
       if (size < 2)
 	throw Errno(ENAMETOOLONG);
-      buf[0] = ' ';
+      buf[0] = WHITEOUT_CHAR;
       buf[1] = 0;
       return 0;
     }
@@ -244,10 +250,14 @@ static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fil
   while (dirent = ::readdir (dir)) {
     char *name = dirent->d_name;
     struct stat stat;
-    ::fstatat(dirfd(dir), name, &stat, 0);
+    ::fstatat(dirfd(dir), name, &stat, AT_SYMLINK_NOFOLLOW);
     if (S_ISCHR(stat.st_mode) && stat.st_rdev == 0) {
       stat.st_mode &= ~S_IFMT;
       stat.st_mode |= S_IFLNK;
+      stat.st_mode |= 0777;
+      stat.st_uid = getuid();
+      stat.st_gid = getgid();
+      stat.st_size = 2;
     }
     if (filler (buf, name, &stat, 0, (fuse_fill_dir_flags)FUSE_FILL_DIR_PLUS))
       break;
@@ -491,11 +501,11 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
   try {
     Path path(path_str);
     int ret;
-    if (strcmp(target, " "))
-      ret = ::symlinkat(target, root_fd_writing, path.c_str());
-    else {
+    if (target[0] == WHITEOUT_CHAR && target[1] == 0) {
       ret = ::mknodat(root_fd_writing, path.c_str(), S_IFCHR, 0);
       ret = 0;
+    } else {
+      ret = ::symlinkat(target, root_fd_writing, path.c_str());
     }
     if (ret < 0)
       throw Errno();

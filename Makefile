@@ -1,15 +1,19 @@
-all: syncfs c00fs c00gitfs
+ARCH = $(shell uname -m)
+
+all: $(ARCH)/syncfs $(ARCH)/c00fs $(ARCH)/c00gitfs
 
 clean:
-	rm -f syncfs c00fs c00gitfs
+	rm -f $(ARCH)/syncfs $(ARCH)/c00fs $(ARCH)/c00gitfs
 
-syncfs: syncfs.cc
-	g++ -g3 ./syncfs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o syncfs
+$(ARCH)/syncfs: syncfs.cc
+	mkdir -p $(ARCH)
+	g++ -g3 ./syncfs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o $@
 
+$(ARCH)/c00fs: c00fs.cc
+	mkdir -p $(ARCH)
+	g++ -g3 ./c00fs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o $@
 
-c00fs: c00fs.cc
-	g++ -g3 ./c00fs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o c00fs
-
-c00gitfs: c00gitfs.cc
-	g++ -g3 ./c00gitfs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o c00gitfs
+$(ARCH)/c00gitfs: c00gitfs.cc
+	mkdir -p $(ARCH)
+	g++ -g3 ./c00gitfs.cc -I/usr/include/fuse3 -lfuse3 -lpthread -ljsoncpp -o $@
 
