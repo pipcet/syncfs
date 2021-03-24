@@ -26,7 +26,7 @@ system("cd data/upper; git init; git config user.name 'SyncFS'; git config user.
 
 run(["sudo", "mount", "-toverlay", "-olowerdir=data/lower,upperdir=data/upper,workdir=data/work,rw", "overlay", "merge"]) or die;
 push @fs, "merge";
-push @ps, start(["$path/$arch/c00gitfs", "data/upper", "merge", "c00git"]);
+push @ps, start(["$path/$arch/c00gitfs", "data/upper", "merge", "data/lower", "c00git"]);
 push @fs, "c00git";
 sleep 1;
 # not currently used.
