@@ -204,8 +204,8 @@ async function main()
 	    timerRunning = true;
 	    console.log(`adding files`);
 	    let rev;
-	    if ((rev = await add_files()) !== "" ||
-		(rev = await del_files()) !== "") {
+	    if ((rev = await add_files()) !== undefined ||
+		(rev = await del_files()) !== undefined) {
 		notify(rev);
 		timerTriggered = true;
 	    }
