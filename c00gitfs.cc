@@ -308,7 +308,7 @@ static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fil
   struct dirent *dirent;
   while (dirent = ::readdir (dir)) {
     char *name = dirent->d_name;
-    if (!strcmp(name, ".wowo"))
+    if (!strcmp(name, ".wowo") || !strcmp(name, ".dir"))
       continue;
     struct stat stat;
     ::fstatat(dirfd(dir), name, &stat, AT_SYMLINK_NOFOLLOW);
