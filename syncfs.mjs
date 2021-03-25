@@ -113,10 +113,23 @@ async function main()
 	input,
     });
 
+    let notify_queues = new Map();
+
     async function notify(rev)
     {
 	for (let remote of remotes) {
-	    child_process.spawn("ssh", [remote, "echo", rev, ">>", "sync/syncfs-pings"], {stdio: ["pipe", "inherit", "inherit"]});
+	    if (!notify_queues.has(remote))
+		notify_queues.set(remote, []);
+	    let q = notify_queues.get(remote);
+	    q.push(rev);
+	    if (q.length === 1) {
+		let cb; cb = () => {
+		    if (q.length) {
+			child_process.spawn("ssh", [remote, "echo", q.shift(), ">>", "sync/syncfs-pings"], {stdio: ["pipe", "inherit", "inherit"]}, cb);
+		    }
+		};
+		cb();
+	    }
 	}
     }
 
