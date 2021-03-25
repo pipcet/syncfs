@@ -6,40 +6,79 @@ import { setTimeout, clearTimeout } from "timers";
 
 let [fifopath, ...remotes] = process.argv.slice(2);
 
-function SyncFSFile(path)
+function SyncFSFile(path, event)
 {
     this.path = path;
-    this.time = Date.now();
+    this.time = Date.now() / 1000.0;
     this.old_by_time = this.time;
     this.set_state("unknown");
+    this.factor = 1.0;
+    if (path.match(/tmp/))
+	this.factor *= .1;
+    if (path.match(/#/))
+	this.factor *= .1;
+    if (path.match(/~$/))
+	this.factor *= .1;
+    if (event.cmdline[0].match(/emacs/))
+	this.factor *= 10:
+    this.score = 0.0;
 }
 
 SyncFSFile.map_by_path = new Map();
-SyncFSFile.by_path = function (path) {
+SyncFSFile.by_path = function (path, event) {
     if (!SyncFSFile.map_by_path.has(path))
-	SyncFSFile.map_by_path.set(path, new SyncFSFile(path));
+	SyncFSFile.map_by_path.set(path, new SyncFSFile(path, event));
     return SyncFSFile.map_by_path.get(path);
 };
 
-SyncFSFile.by_state = new Map();
-SyncFSFile.by_state.set(undefined, new Set());
-SyncFSFile.by_state.set("written", new Set());
-SyncFSFile.by_state.set("deleted", new Set());
-SyncFSFile.by_state.set("unknown", new Set());
-SyncFSFile.by_state.set("synched", new Set());
+SyncFSFile.map_by_state = new Map();
+SyncFSFile.map_by_state.set(undefined, new Set());
+SyncFSFile.map_by_state.set("written", new Set());
+SyncFSFile.map_by_state.set("deleted", new Set());
+SyncFSFile.map_by_state.set("unknown", new Set());
+SyncFSFile.map_by_state.set("synched", new Set());
 
-SyncFSFile.prototype.by_state = SyncFSFile.by_state;
+SyncFSFile.prototype.map_by_state = SyncFSFile.map_by_state;
+
+SyncFSFile.by_state = function (state, n)
+{
+    let files = [...this.map_by_state.get(state)];
+    let time = Date.now()/1000.0;
+    files.map(file => file.update_score(time));
+    files = files.sort((a, b) => b.score - a.score);
+    files.splice(n);
+    for (let file of files) {
+	console.log(file.path, file.score);
+    }
+    return files;
+};
+
+SyncFSFile.prototype.update_score = function (time = Date.now() / 1000.0)
+{
+    let dt = time - this.time;
+    this.score *= Math.exp(dt * .01);
+    this.time = time;
+};
+
+SyncFSFile.prototype.bump_score = function (event, i)
+{
+    this.update_score();
+    let absscore = this.path.length + event.size;
+    let relscore = 1 - Math.exp(-absscore / 10000);
+    this.score += relscore;
+};
 
 SyncFSFile.prototype.set_state = function (newstate)
 {
-    this.by_state.get(this.state).delete(this);
+    this.map_by_state.get(this.state).delete(this);
     this.state = newstate;
-    this.by_state.get(this.state).add(this);
+    this.map_by_state.get(this.state).add(this);
 };
 
 SyncFSFile.prototype.sync = function (rev)
 {
     this.set_state("synched");
+    this.score = 0;
 };
 
 SyncFSFile.prototype.set_old_by_time = function (old_by_time)
@@ -50,6 +89,7 @@ SyncFSFile.prototype.set_old_by_time = function (old_by_time)
 SyncFSFile.prototype.touch_written = function (event, i)
 {
     this.set_state("written");
+    this.bump_score(event, i);
 };
 
 SyncFSFile.prototype.touch_unknown = function (event, i)
@@ -60,6 +100,7 @@ SyncFSFile.prototype.touch_unknown = function (event, i)
 SyncFSFile.prototype.touch_deleted = function (event, i)
 {
     this.set_state("deleted");
+    this.bump_score(event, i);
 };
 
 SyncFSFile.prototype.touch = function (event, i)
@@ -89,7 +130,7 @@ async function update_score(event)
     }
 
     for (let i = 0; i < paths.length; i++) {
-	let f = SyncFSFile.by_path(paths[i]);
+	let f = SyncFSFile.by_path(paths[i], event);
 	f.touch(event, i);
     }
 }
@@ -140,19 +181,10 @@ async function main()
 	    process.chdir("c00git");
 	    chdired = true;
 	}
-	if (SyncFSFile.by_state.get(state).size === 0) {
-	    console.error("no files to add");
-	    return;
-	}
-
-	let files = [];
-	let i = 0;
 	let max_files = 512;
-	for (let file of SyncFSFile.by_state.get(state)) {
-	    files.push(file);
-	    if (i++ == max_files)
-		break;
-	}
+	let files = SyncFSFile.by_state(state, max_files);
+	if (files.length === 0)
+	    return;
 
 	let paths = files.map(f => f.path);
 	let stdin = paths.join("\0");
