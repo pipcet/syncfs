@@ -143,7 +143,6 @@ async function main()
 
 	let paths = files.map(f => f.path);
 	let stdin = paths.join("\0");
-	console.log(`adding ${i} files: ${stdin}`)
 	let error = await new Promise(r => {
 	    let child =
 		child_process.spawn("git", args, {stdio: ["pipe", "inherit", "inherit"]});
@@ -155,19 +154,29 @@ async function main()
 	    return;
 	error = await new Promise(r => {
 	    let child =
-		child_process.spawn("git", ["commit", "--allow-empty", "-m", "automatic commit"], {stdio: ["pipe", "inherit", "inherit"]})
+		child_process.spawn("git", ["commit", "--allow-empty", "-m", "automatic commit"], {stdio: ["inherit", "inherit", "inherit"]})
 	    child.on("close", code => r(code !== 0));
 	});
 	if (error)
 	    return;
-	try {
-	    let rev = child_process.execSync("git rev-parse HEAD");
-	    for (let file of files)
-		file.sync(rev);
-	    return rev;
-	} catch (err) {
-	    console.error(err.stdout.toString());
-	}
+	let rev;
+	error = await new Promise(r => {
+	    let child =
+		child_process.spawn("git", ["rev-parse", "HEAD"],
+				    { stdio: ["inherit", "pipe", "inherit"] });
+	    rev = "";
+	    child.stdout.on("data", data => {
+		rev += data.toString();
+	    });
+	    child.on("close", code => r(code !== 0));
+	})
+	if (error)
+	    return;
+	for (let file of files)
+	    file.sync(rev);
+	while (rev.length && rev[rev.length-1] === "\n")
+	    rev = rev.substr(0, rev.length - 1);
+	return rev;
     }
 
     async function add_files()
@@ -202,7 +211,6 @@ async function main()
 	while (timerTriggered) {
 	    timerTriggered = false;
 	    timerRunning = true;
-	    console.log(`adding files`);
 	    let rev;
 	    if ((rev = await add_files()) !== undefined ||
 		(rev = await del_files()) !== undefined) {
