@@ -5,7 +5,49 @@ import * as child_process from "child_process";
 import { setTimeout, clearTimeout } from "timers";
 import * as syncfs from "./syncfs-lib.mjs";
 
-let [fifopath, ...remotes] = process.argv.slice(2);
+let inherit = {
+    stdio: [
+	"inherit",
+	"inherit",
+	"inherit",
+    ],
+    maxBuffer: 1024 * 1024 * 1024,
+};
+
+async function find_all_git_objects()
+{
+    let ret = [];
+    let dir = await fs.opendir("c00git/.git/objects");
+    while (true) {
+	let dirent = await dir.read();
+	if (!dirent)
+	    break;
+	let prefix = dirent.name;
+	if (!prefix.match(/^[0-9a-f][0-9a-f]$/))
+	    continue;
+
+	let subdir = await fs.opendir("c00git/.git/objects/" + prefix);
+	while (true) {
+	    let dirent = await subdir.read();
+	    if (!dirent)
+		break;
+	    let name = prefix + dirent.name;
+	    let size = (await fs.stat(`c00git/.git/objects/${prefix}/${dirent.name}`)).size;
+	    ret.push([name, size]);
+	}
+	subdir.close();
+    }
+    dir.close();
+
+    ret.sort((a,b) => {
+	if (b[1] < a[1])
+	    return -1;
+	if (b[1] > a[1])
+	    return +1;
+	return 0;
+    });
+    return ret;
+}
 
 function SyncFSFile(path, event)
 {
@@ -346,4 +388,29 @@ async function main()
     });
 }
 
-main();
+async function run()
+{
+    process.chdir("/home/pip/sync/c00git"); // XXX
+    let local;
+    for (let file of process.argv.slice(2)) {
+	if (await new Promise(r =>
+	    child_process.spawn("git", ["cat-file", "-e", file], inherit)
+		.on("close", r))) {
+	    if (!local) {
+	        local = child_process.spawn("git", ["unpack-objects"],
+					    { stdio: ["pipe", "inherit", "inherit"] });
+		process.stdin.on("data", data => {
+		    local.stdin.write(data);
+		});
+	    }
+	    console.error(`don't have ${file}`);
+	    process.stdout.write(`${file}\n`);
+	}
+    }
+    if (local) {
+	local.stdin.end();
+	await new Promise(r => local.on("close", r));
+    }
+}
+
+run();

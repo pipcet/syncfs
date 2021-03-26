@@ -648,7 +648,10 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
   try {
     Path path(path_str);
     int ret;
-    ::unlinkat(root_fd_writing, path.c_str(), 0);
+    if (::unlinkat(root_fd_writing, path.c_str(), 0) < 0 &&
+	errno == EISDIR) {
+      fs_delete_recursively_at(root_fd_writing, path.c_str());
+    }
     clear_whiteout_whiteout(path);
     if (strcmp(target, " ")) {
       ret = ::symlinkat(target, root_fd_writing, path.c_str());

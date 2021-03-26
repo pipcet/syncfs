@@ -48,13 +48,6 @@ push @fs, "mount";
 sleep 1;
 push @ps, start(["node", "$path/syncfs.mjs", "fifos", $remote]);
 sleep 1;
-push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifos", $remote]);
-sleep 1;
-push @ps, start(["perl", "$path/syncfs-lowerer.pl", $localn, $remote]);
-sleep 1;
-# disabled; overlayfs is buggy
-# push @ps, start(["perl", "$path/syncfs-colowerer.pl", $localn, $remote]);
-sleep 1;
 
 sub terminate {
     for my $p (@ps) {

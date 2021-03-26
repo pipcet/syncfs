@@ -2,6 +2,7 @@ import * as oldfs from "fs";
 import * as fs from "fs/promises";
 import * as readline from "readline";
 import * as child_process from "child_process";
+import * as syncfs from "./syncfs-lib.mjs";
 import { setTimeout, clearTimeout } from "timers";
 
 let tmpdir = "/home/pip";
@@ -9,30 +10,21 @@ let tmpcounter = Math.floor(Date.now());
 let tmpnam = () => {
     return tmpdir + "/detach-token-" + tmpcounter++;
 };
-let inherit = {stdio:["inherit","inherit","inherit"]};
+let inherit = {
+    stdio: [
+	"inherit",
+	"inherit",
+	"inherit",
+    ],
+    maxBuffer: 1024 * 1024 * 1024,
+};
 
-let myid = "myid";
+let whoami = syncfs.whoami;
 
 async function copy_recursively(src, dst, files)
 {
     for (let file of files) {
-	try {
-	    let dir = await fs.opendir(src + "/" + file);
-	    await fs.mkdir(dst + "/" + file, { recursive: true });
-	    for await (let dirent of dir) {
-		await copy_recursively(src + "/" + file,
-				       dst + "/" + file,
-				       [dirent.name]);
-	    }
-	} catch (e) {
-	    if (e.code === "ENOENT")
-		continue;
-	    if (e.code !== "ENOTDIR")
-		throw e;
-	    await fs.copyFile(src + "/" + file,
-			      dst + "/" + file,
-			      oldfs.constants.COPYFILE_FICLONE);
-	}
+	child_process.execSync(`cp -a ${src}/${file} ${dst}/${file}`)
     }
 }
 
@@ -70,10 +62,11 @@ async function lower_copy(files)
 	await with_suspended_fs("mount", "c00git", async function () {
 	    file = file.replace(/^mount\//, "");
 	    await copy_recursively("data/upper", "data/lower", [file]);
-	    sha512 = child_process.execSync(`find data/lower/${file} -type f|xargs sha512sum|sort`);
+	    sha512 = "dummy";
+	    //child_process.execSync(`find data/lower/${file} -type f|xargs sha512sum|sort`, { maxBuffer: 1024 * 1024 * 1024 });
 	});
-	await fs.mkdir("mount/lowering/" + file + `/${myid}`, {recursive:true});
-	let outpath = "mount/lowering/" + file + `/${myid}/sha512`;
+	await fs.mkdir("mount/lowering/" + file + `/${whoami}`, {recursive:true});
+	let outpath = "mount/lowering/" + file + `/${whoami}/sha512`;
 	await oldfs.writeFileSync(outpath, sha512);
 	console.error(`wrote ${outpath}`)
     }
@@ -95,7 +88,7 @@ async function run()
     let command = args.shift();
     if (command === "stage1") {
 	let [local, remote, ...files] = args;
-	myid = local;
+	whoami = local;
 	console.error("lowering locally");
 	await lower_copy(files);
 	if (remote !== "" && remote !== "localhost") {
@@ -104,11 +97,11 @@ async function run()
 	}
     } else if (command === "stage2") {
 	let [local, remote, ...files] = args;
-	myid = local;
+	whoami = local;
 	for (let file of files) {
 	    file = file.replace(/^mount\//, "");
 	    let shasum_local = oldfs.readFileSync("data/upper/lowering/" +
-						  file + "/" + myid + "/sha512", "utf-8");
+						  file + "/" + whoami + "/sha512", "utf-8");
 	    let shasum_remote = oldfs.readFileSync("data/upper/lowering/" +
 						   file + "/" + process.argv[4] +
 						   "/sha512", "utf-8");
