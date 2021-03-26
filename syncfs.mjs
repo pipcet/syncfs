@@ -44,10 +44,14 @@ SyncFSFile.map_by_state.set("synched", new Set());
 
 SyncFSFile.prototype.map_by_state = SyncFSFile.map_by_state;
 
-SyncFSFile.by_state = async function (state, n)
+SyncFSFile.by_state = async function (state, n, _time)
 {
-    let files = [...this.map_by_state.get(state)];
+    let files = [];
     let time = Date.now()/1000.0;
+    for (let file of this.map_by_state.get(state)) {
+	if (file.old_by_time < time)
+	    files.push(file);
+    }
     files.map(file => file.update_score(time));
     files = files.sort((a, b) => b.score - a.score);
     if (state === "written")
@@ -101,10 +105,72 @@ SyncFSFile.prototype.set_old_by_time = function (old_by_time)
     this.old_by_time = old_by_time;
 };
 
+SyncFSFile.prototype.map_access_types = new Map();
+
+SyncFSFile.prototype.map_access_types.set("very hot", { delay: 0, factor: 1000 });
+SyncFSFile.prototype.map_access_types.set("medium", { delay: 15, factor: 1 });
+SyncFSFile.prototype.map_access_types.set("cold", { delay: 120, factor: .1 });
+SyncFSFile.prototype.map_access_types.set("very cold", { delay: 3600, factor: .01 });
+
+SyncFSFile.prototype.determine_access_type = function (event, i)
+{
+    let path = this.path;
+    let components = path.split("/");
+    let is = {};
+    if (event.cmdline) {
+	let [command, ...args] = event.cmdline;
+	for (let component of command.split("/")) {
+	    if (component === "emacs")
+		is.emacs = true;
+	    if (component === "gcc" ||
+		component === "g++" ||
+		component === "cc1")
+		is.compiled = true;
+	}
+    }
+    for (let component of components) {
+	if (component === ",git") {
+	    is.git = true;
+	}
+	if (component.match(/^tmp/)) {
+	    is.tmp = true;
+	}
+	if (component.match(/\.lock$/)) {
+	    is.lock = true;
+	}
+	if (component.match(/\.pack$/)) {
+	    is.pack = true;
+	}
+	if (component === "index") {
+	    is.index = true;
+	}
+	if (component.match(/\.(c|h|s|cc|C|S|js|mjs|txt|sh|bash|mk)$/)) {
+	    is.source = true;
+	}
+	if (component.match(/^(Makefile|GNU[mM]akefile)/)) {
+	    is.source = true;
+	}
+	if (component.match(/\.(o|so|a|exe)$/)) {
+	    is.compiled = true;
+	}
+    }
+    if (is.source || is.emacs)
+	return "very hot";
+    if (is.git && (is.tmp || is.lock || is.index))
+	return "very cold";
+    if (is.git || is.tmp || is.lock)
+	return "cold";
+    if (is.compiled)
+	return "cold";
+    return "medium";
+};
+
 SyncFSFile.prototype.touch_written = function (event, i)
 {
     this.set_state("written");
     this.bump_score(event, i);
+    let at = this.map_access_types.get(this.determine_access_type(event, i));
+    this.set_old_by_time(Date.now()/1000.0 + at.delay);
 };
 
 SyncFSFile.prototype.touch_unknown = function (event, i)
@@ -116,6 +182,8 @@ SyncFSFile.prototype.touch_deleted = function (event, i)
 {
     this.set_state("deleted");
     this.bump_score(event, i);
+    let at = this.map_access_types.get(this.determine_access_type(event, i));
+    this.set_old_by_time(Date.now()/1000.0 + at.delay);
 };
 
 SyncFSFile.prototype.touch = function (event, i)
@@ -152,11 +220,13 @@ async function update_score(event)
 
 async function resolve_starid(event)
 {
-    let cmdline =
-	(await fs.readFile("/proc/" + event.pid + "/cmdline", "utf-8"))
-	.split("\0");
-
-    event.cmdline = cmdline;
+    try {
+	let cmdline =
+	    (await fs.readFile("/proc/" + event.pid + "/cmdline", "utf-8"))
+	    .split("\0");
+	event.cmdline = cmdline;
+    } catch (e) {
+    }
 }
 
 async function main()
@@ -223,7 +293,7 @@ async function main()
 	    if (q.length === 1) {
 		let cb; cb = () => {
 		    if (q.length) {
-			child_process.spawn("ssh", [remote, "echo", q.shift(), ">>", "sync/fifos/remote-to-local"], {stdio: ["pipe", "inherit", "inherit"]}, cb);
+			child_process.spawn("ssh", [remote, "echo", q.shift(), ">>", "sync/fifos/remote-to-local"], {stdio: ["pipe", "inherit", "inherit"]}).on("close", cb);
 		    }
 		};
 		cb();
@@ -233,9 +303,10 @@ async function main()
 
     async function add_or_del_files(state, args)
     {
+	let time = Date.now() / 1000.0;
 	let max_files = 16 * 1024;
 	let delta = 0;
-	let files = await SyncFSFile.by_state(state, max_files);
+	let files = await SyncFSFile.by_state(state, max_files, time);
 	if (files.length === 0)
 	    return;
 
@@ -322,6 +393,7 @@ async function main()
 	    } catch (e) {
 	    }
 	    timerRunning = false;
+	    await new Promise(r => setTimeout(r, 1000));
 	}
     }
 
