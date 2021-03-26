@@ -107,6 +107,9 @@ static void fs_delete_recursively_at(int fd, std::string path)
 static int root_fd_reading;
 static int root_fd_writing;
 static int root_fd_restoring;
+static int root_fd_metadata;
+static int root_fd_metadata_wowo;
+static int root_fd_metadata_lower;
 static char *root_path_reading;
 static char *root_path_writing;
 static char *root_path_restoring;
@@ -144,13 +147,49 @@ static bool is_whiteout(Path path)
 static bool is_whiteout_whiteout(Path path)
 {
   size_t n = strlen(path.c_str());
-  char str[strlen(".wowo/") + n + 1];
+  char str[strlen(".wowo/") + n + strlen("/.wo") + 1];
+  sprintf(str, ".wowo/%s/.wo", path.c_str());
+  char *p = strrchr(str, '/');
+  do {
+    sprintf(p, "/.wo");
+    int fd = ::openat(root_fd_writing, str, O_RDONLY);
+    if (fd > 0) {
+      ::close(fd);
+      return true;
+    }
+    *p = 0;
+    p = strrchr(str, '/');
+  } while (p);
+  return false;
+}
+
+static void clear_whiteout_whiteout(Path path)
+{
+  char str[strlen(".wowo/") + strlen(path.c_str()) + strlen("/.wo") + 1];
+  sprintf(str, ".wowo/%s/.wo", path.c_str());
+  char *p = strrchr(str, '/');
+  do {
+    sprintf(p, "/.wo");
+    ::unlinkat(root_fd_writing, str, 0);
+    *p = 0;
+    p = strrchr(str, '/');
+  } while (p);
+}
+
+static void create_whiteout_whiteout(Path path)
+{
+  char str[strlen(".wowo/") + strlen(path.c_str()) + strlen("/.wo") + 1];
   sprintf(str, ".wowo/%s", path.c_str());
-  int fd = ::openat(root_fd_writing, str, O_RDONLY);
-  if (fd < 0)
-    return false;
-  ::close(fd);
-  return true;
+  for (char *p = str; *p; p++) {
+    if (*p == '/') {
+      *p = 0;
+      ::mkdirat(root_fd_writing, str, 0770);
+      *p = '/';
+    }
+  }
+  ::mkdirat(root_fd_writing, str, 0770);
+  sprintf(str, ".wowo/%s/.wo", path.c_str());
+  ::close(::openat(root_fd_writing, str, O_CREAT, 0660));
 }
 
 static int c00gitfs_getattr(const char *path_str,
@@ -159,13 +198,15 @@ static int c00gitfs_getattr(const char *path_str,
 {
   try {
     Path path(path_str);
+    char str[strlen(path.c_str()) + 1];
+    strcpy(str, path.c_str());
     int ret = fstatat(root_fd_reading, path.c_str(), statp,
 		      AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
     if (ret < 0)
       throw Errno();
+    if (is_whiteout_whiteout(path))
+      throw Errno(ENOENT);
     if (is_whiteout(statp)) {
-      if (is_whiteout_whiteout(path))
-	throw Errno(ENOENT);
       statp->st_mode &= ~S_IFMT;
       statp->st_mode |= S_IFLNK;
       statp->st_mode |= 0777;
@@ -212,6 +253,7 @@ static int c00gitfs_mkdir(const char *path_str, mode_t mode)
     int ret = ::mkdirat(root_fd_writing, path.c_str(), mode);
     if (ret < 0) {
       if (errno == EEXIST) {
+	clear_whiteout_whiteout(path);
 	Path dotdir(path_str, ".dir");
 	::close(::openat(root_fd_writing, dotdir.c_str(), O_CREAT|O_RDWR,
 			 0660));
@@ -225,45 +267,37 @@ static int c00gitfs_mkdir(const char *path_str, mode_t mode)
   }
 }
 
-static int c00gitfs_rmdir(const char *path_str)
+static int c00gitfs_unlink(const char *path_str)
 {
   try {
     Path path(path_str);
-    int ret = ::unlinkat(root_fd_writing, path.c_str(), AT_REMOVEDIR);
-    if (ret < 0)
-      throw Errno();
+    if (is_whiteout(path) && is_whiteout_whiteout(path))
+      throw Errno(ENOENT);
+    create_whiteout_whiteout(path);
     return 0;
   } catch (Errno error) {
     return -error.error;
   }
 }
 
-static int c00gitfs_unlink(const char *path_str)
+static int c00gitfs_rmdir(const char *path_str)
 {
-  try {
-    Path path(path_str);
-    if (is_whiteout(path)) {
-      if (is_whiteout_whiteout(path))
-	throw Errno(ENOENT);
-      char str[strlen(".wowo/") + strlen(path.c_str()) + 1];
-      sprintf(str, ".wowo/%s", path.c_str());
-      for (char *p = str; *p; p++) {
-	if (*p == '/') {
-	  *p = 0;
-	  ::mkdirat(root_fd_writing, str, 0770);
-	  *p = '/';
-	}
-      }
-      ::mkdirat(root_fd_writing, str, 0770);
-      return 0;
-    }
-    int ret = ::unlinkat(root_fd_writing, path.c_str(), 0);
-    if (ret < 0)
-      throw Errno();
-    return 0;
-  } catch (Errno error) {
-    return -error.error;
+  Path path(path_str);
+  DIR *dir = ::fdopendir (openat (root_fd_reading, path.c_str(), O_DIRECTORY));
+  if (!dir)
+    return -errno;
+  struct dirent *dirent;
+  while (dirent = ::readdir (dir)) {
+    char *name = dirent->d_name;
+    if (!strcmp(name, ".") || !strcmp(name, "..") || !strcmp(name, ".dir"))
+      continue;
+    if (is_whiteout_whiteout(Path(path_str, dirent->d_name)))
+      continue;
+    closedir(dir);
+    return -EEXIST;
   }
+  closedir(dir);
+  return c00gitfs_unlink(path_str);
 }
 
 static int c00gitfs_chmod(const char *path_str, mode_t mode,
@@ -312,9 +346,9 @@ static int c00gitfs_readdir(const char *path_str, void *buf, fuse_fill_dir_t fil
       continue;
     struct stat stat;
     ::fstatat(dirfd(dir), name, &stat, AT_SYMLINK_NOFOLLOW);
+    if (is_whiteout_whiteout(Path(path_str, dirent->d_name)))
+      continue;
     if (is_whiteout(&stat)) {
-      if (is_whiteout_whiteout(Path(path_str, dirent->d_name)))
-	continue;
       stat.st_mode &= ~S_IFMT;
       stat.st_mode |= S_IFLNK;
       stat.st_mode |= 0777;
@@ -335,10 +369,21 @@ static int c00gitfs_create(const char *path_str, mode_t mode, fuse_file_info *fi
   try {
     Path path(path_str);
     size_t size = 0;
+    if (fi->flags & O_EXCL) {
+      int fd = ::openat(root_fd_reading, path.c_str(), O_RDONLY);
+      if (fd > 0) {
+	::close(fd);
+	if (!is_whiteout_whiteout(path))
+	  throw Errno(EEXIST);
+	else
+	  fi->flags |= O_TRUNC;
+      }
+    }
     fi->flags &= ~O_EXCL;
     int fd = ::openat(root_fd_writing, path.c_str(), O_CREAT|fi->flags, mode);
     if (fd < 0)
       throw Errno();
+    clear_whiteout_whiteout(path);
     fi->fh = fd;
     return 0;
   } catch (Errno error) {
@@ -354,10 +399,23 @@ static int c00gitfs_open(const char *path_str, fuse_file_info *fi)
     if ((fi->flags|O_RDWR) == fi->flags ||
 	(fi->flags|O_WRONLY) == fi->flags)
       rfd = root_fd_writing;
+    else if (is_whiteout_whiteout(path))
+      throw Errno(ENOENT);
+    if (fi->flags & O_EXCL) {
+      int fd = ::openat(root_fd_reading, path.c_str(), O_RDONLY);
+      if (fd > 0) {
+	::close(fd);
+	if (!is_whiteout_whiteout(path))
+	  throw Errno(EEXIST);
+	else
+	  fi->flags |= O_TRUNC;
+      }
+    }
     fi->flags &= ~O_EXCL;
     int fd = ::openat(rfd, path.c_str(), fi->flags);
     if (fd < 0)
       throw Errno();
+    clear_whiteout_whiteout(path);
     fi->fh = fd;
     return 0;
   } catch (Errno error) {
@@ -393,6 +451,30 @@ static int c00gitfs_setxattr(const char *path_str, const char *name,
 {
   try {
     Path path(path_str);
+    if (!strcmp(name, "syncfs.detach-for-lowering")) {
+      char *str = (char *)malloc(size + 1);
+      memcpy(str, value, size);
+      str[size] = 0;
+      int fd = open(str, O_RDWR|O_CREAT, 0666);
+      fprintf (stderr, "detaching for lowering operation, token %s\n",
+	       str);
+      close(root_fd_reading);
+      close(root_fd_writing);
+      while (fd >= 0) {
+	close(fd);
+	sleep(1);
+	fd = open(str, O_RDWR, 0666);
+      }
+      root_fd_reading = open(root_path_reading, O_RDONLY|O_PATH);
+      if (root_fd_reading < 0)
+	abort();
+      root_fd_writing = open(root_path_writing, O_RDONLY|O_PATH);
+      if (root_fd_writing < 0)
+	abort();
+      fprintf (stderr, "reattached, token %s\n",
+	       str);
+      return 0;
+    }
     const char *prefix = "syncfs.user.";
     char *prefixed_name =
       (char *)malloc (strlen(prefix) + strlen(name) + 1);
@@ -567,6 +649,7 @@ static int c00gitfs_symlink(const char *target, const char *path_str)
     Path path(path_str);
     int ret;
     ::unlinkat(root_fd_writing, path.c_str(), 0);
+    clear_whiteout_whiteout(path);
     if (strcmp(target, " ")) {
       ret = ::symlinkat(target, root_fd_writing, path.c_str());
     } else {
@@ -588,6 +671,7 @@ static int c00gitfs_link(const char *path1, const char *path_str)
       path1++;
     int ret = ::linkat(root_fd_writing, path1,
 		       AT_FDCWD, path.c_str(), 0);
+    clear_whiteout_whiteout(path);
     if (ret < 0)
       throw Errno();
     return 0;
@@ -606,6 +690,8 @@ static int c00gitfs_rename(const char *path_str, const char *path2_str,
     int ret = ::renameat2(root_fd_writing, path.c_str(),
 			  root_fd_writing, path2.c_str(),
 			  0);
+    clear_whiteout_whiteout(path2);
+    create_whiteout_whiteout(path);
     if (ret < 0)
       throw Errno();
     return 0;
@@ -628,7 +714,7 @@ static struct fuse_operations c00gitfs_operations = {
   .open = c00gitfs_open,
   .release = c00gitfs_release,
   .fsync = c00gitfs_fsync,
-  //.setxattr = syncfs_setxattr,
+  .setxattr = c00gitfs_setxattr,
   //.getxattr = syncfs_getxattr,
   //.listxattr = syncfs_listxattr,
   //.removexattr = syncfs_removexattr,

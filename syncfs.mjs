@@ -3,6 +3,7 @@ import * as fs from "fs/promises";
 import * as readline from "readline";
 import * as child_process from "child_process";
 import { setTimeout, clearTimeout } from "timers";
+import * as syncfs from "./syncfs-lib.mjs";
 
 let [fifopath, ...remotes] = process.argv.slice(2);
 
@@ -15,13 +16,16 @@ function SyncFSFile(path, event)
     this.factor = 1.0;
     if (path.match(/tmp/))
 	this.factor *= .1;
+    if (path.match(/lock/))
+	this.factor *= .1;
     if (path.match(/#/))
 	this.factor *= .1;
     if (path.match(/~$/))
 	this.factor *= .1;
     if (event.cmdline[0].match(/emacs/))
-	this.factor *= 10:
+	this.factor *= 10;
     this.score = 0.0;
+    this.delta_size = 0;
 }
 
 SyncFSFile.map_by_path = new Map();
@@ -40,15 +44,24 @@ SyncFSFile.map_by_state.set("synched", new Set());
 
 SyncFSFile.prototype.map_by_state = SyncFSFile.map_by_state;
 
-SyncFSFile.by_state = function (state, n)
+SyncFSFile.by_state = async function (state, n)
 {
     let files = [...this.map_by_state.get(state)];
     let time = Date.now()/1000.0;
     files.map(file => file.update_score(time));
     files = files.sort((a, b) => b.score - a.score);
+    if (state === "written")
+	for (let i = 0; i < files.length; i++)
+	    try {
+		(await fs.open(files[i].path)).close();
+	    } catch (e) {
+		files.splice(i, 1);
+		i--;
+	    }
+    console.log(`${files.length} files in state ${state}`)
     files.splice(n);
     for (let file of files) {
-	console.log(file.path, file.score);
+	//console.log(file.path, file.score);
     }
     return files;
 };
@@ -56,13 +69,14 @@ SyncFSFile.by_state = function (state, n)
 SyncFSFile.prototype.update_score = function (time = Date.now() / 1000.0)
 {
     let dt = time - this.time;
-    this.score *= Math.exp(dt * .01);
+    //this.score *= Math.exp(dt * .01);
     this.time = time;
 };
 
 SyncFSFile.prototype.bump_score = function (event, i)
 {
     this.update_score();
+    this.delta_size += this.path.length + event.size;
     let absscore = this.path.length + event.size;
     let relscore = 1 - Math.exp(-absscore / 10000);
     this.score += relscore;
@@ -77,6 +91,7 @@ SyncFSFile.prototype.set_state = function (newstate)
 
 SyncFSFile.prototype.sync = function (rev)
 {
+    this.delta_size = 0;
     this.set_state("synched");
     this.score = 0;
 };
@@ -146,13 +161,51 @@ async function resolve_starid(event)
 
 async function main()
 {
-    let input = oldfs.createReadStream(fifopath + "/fuse-to-daemon");
-    let output = oldfs.createWriteStream(fifopath + "/daemon-to-fuse",
+    process.chdir("c00git");
+    let input = oldfs.createReadStream("../" + fifopath + "/fuse-to-daemon");
+    let output = oldfs.createWriteStream("../" + fifopath + "/daemon-to-fuse",
 					 { highWaterMark: 0 });
 
     let rl = readline.createInterface({
 	input,
     });
+
+    let remote_resolve;
+    let remote_async = async function () {
+	while (true) {
+	    console.error("initializing promise");
+	    let remote_promise = new Promise(r => remote_resolve = r);
+	    let [rev, size] = await remote_promise;
+	    remote_resolve = undefined;
+	    await new Promise(r => {
+		child_process.spawn("git", ["pull", remotes[0], rev, "--no-edit"], {stdio: ["inherit", "inherit", "inherit"]}).on("close", r);
+	    });
+	    await new Promise(r => {
+		child_process.spawn("git", ["commit", "-m", "merge"], {stdio: ["inherit", "inherit", "inherit"]}).on("close", r);
+	    });
+	}
+    };
+    remote_async();
+
+    let remote_setup; remote_setup = () => {
+	let remote_input = oldfs.createReadStream("../" + fifopath + "/remote-to-local");
+	let remote_rl = readline.createInterface({
+	    input: remote_input,
+	});
+
+	remote_rl.on("line", async function (line) {
+	    console.error("received " + line);
+	    let [rev,size] = line.split(/ /);
+	    while (!remote_resolve)
+		await new Promise(r => setTimeout(r, 1000));
+	    console.error("resolving");
+	    remote_resolve([rev, size]);
+	});
+	remote_rl.on("close", () => {
+	    remote_setup();
+	})
+    };
+    remote_setup();
 
     let notify_queues = new Map();
 
@@ -166,7 +219,7 @@ async function main()
 	    if (q.length === 1) {
 		let cb; cb = () => {
 		    if (q.length) {
-			child_process.spawn("ssh", [remote, "echo", q.shift(), ">>", "sync/syncfs-pings"], {stdio: ["pipe", "inherit", "inherit"]}, cb);
+			child_process.spawn("ssh", [remote, "echo", q.shift(), ">>", "sync/fifos/remote-to-local"], {stdio: ["pipe", "inherit", "inherit"]}, cb);
 		    }
 		};
 		cb();
@@ -174,17 +227,16 @@ async function main()
 	}
     }
 
-    let chdired = false;
     async function add_or_del_files(state, args)
     {
-	if (!chdired) {
-	    process.chdir("c00git");
-	    chdired = true;
-	}
 	let max_files = 512;
-	let files = SyncFSFile.by_state(state, max_files);
+	let delta = 0;
+	let files = await SyncFSFile.by_state(state, max_files);
 	if (files.length === 0)
 	    return;
+
+	for (let file of files)
+	    delta += file.delta_size;
 
 	let paths = files.map(f => f.path);
 	let stdin = paths.join("\0");
@@ -196,14 +248,14 @@ async function main()
 	    child.stdin.end();
 	});
 	if (error)
-	    return;
+	    throw error;
 	error = await new Promise(r => {
 	    let child =
 		child_process.spawn("git", ["commit", "--allow-empty", "-m", "automatic commit"], {stdio: ["inherit", "inherit", "inherit"]})
 	    child.on("close", code => r(code !== 0));
 	});
 	if (error)
-	    return;
+	    throw error;
 	let rev;
 	error = await new Promise(r => {
 	    let child =
@@ -216,17 +268,17 @@ async function main()
 	    child.on("close", code => r(code !== 0));
 	})
 	if (error)
-	    return;
+	    throw error;
 	for (let file of files)
 	    file.sync(rev);
 	while (rev.length && rev[rev.length-1] === "\n")
 	    rev = rev.substr(0, rev.length - 1);
-	return rev;
+	return rev + " " + delta;
     }
 
     async function add_files()
     {
-	return await add_or_del_files("written", ["add", "--ignore-removal", "--pathspec-from-file=-", "--pathspec-file-nul"]);
+	return await add_or_del_files("written", ["add", "--pathspec-from-file=-", "--pathspec-file-nul"]);
     }
 
     async function del_files()
@@ -254,20 +306,23 @@ async function main()
 	    return;
 	}
 	while (timerTriggered) {
-	    timerTriggered = false;
 	    timerRunning = true;
-	    let rev;
-	    if ((rev = await add_files()) !== undefined ||
-		(rev = await del_files()) !== undefined) {
-		notify(rev);
-		timerTriggered = true;
+	    try {
+		let rev;
+		if ((rev = await add_files()) === undefined &&
+		    (rev = await del_files()) === undefined) {
+		    timerTriggered = false;
+		} else {
+		    notify(rev);
+		}
+	    } catch (e) {
 	    }
 	    timerRunning = false;
 	}
     }
 
     rl.on("line", async function (line) {
-	console.log(line);
+	//console.log(line);
 	if (line === "") {
 	    event.done = true;
 	    await handle_event(event);

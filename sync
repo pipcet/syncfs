@@ -2,9 +2,21 @@
 use strict;
 use IPC::Run qw(start run);
 
-mkdir("fifos");
-system("mkfifo fifos/fuse-to-daemon fifos/daemon-to-fuse fifos/daemon-to-notify fifos/daemon-to-lowerer");
+sub terminate;
 
+$SIG{INT} = sub {
+    terminate;
+};
+
+$SIG{TERM} = sub {
+    terminate;
+};
+
+system("rm -rf fifos");
+mkdir("fifos");
+system("mkfifo fifos/fuse-to-daemon fifos/daemon-to-fuse fifos/daemon-to-notifye fifos/daemon-to-lowerer fifos/remote-to-local");
+
+system("btrfs subvolume create data");
 mkdir("data");
 mkdir("data/lower");
 mkdir("data/upper");
@@ -12,7 +24,6 @@ mkdir("data/work");
 mkdir("merge");
 mkdir("mount");
 mkdir("c00git");
-system("echo > syncfs-pings");
 
 my @ps;
 my @fs;
@@ -22,7 +33,9 @@ chomp $arch;
 
 my $remote = shift;
 my $localn = ($remote eq "10.4.0.1") ? "10.4.0.2" : "10.4.0.1";
-system("cd data/upper; git init; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config core.compression 0; git config pull.rebase false; git remote add $remote $remote:sync/c00git");
+unless (-e "data/upper/.git") {
+    system("cd data/upper; git init; git branch -M main; git config user.name 'SyncFS'; git config user.email 'pipcet\@gmail.com'; git config core.compression 0; git config pull.rebase false; git remote add $remote $remote:sync/c00git; git commit --allow-empty -m 'initial empty commit'; git commit --allow-empty -m 'initial commit'");
+}
 
 run(["sudo", "mount", "-toverlay", "-olowerdir=data/lower,upperdir=data/upper,workdir=data/work,rw", "overlay", "merge"]) or die;
 push @fs, "merge";
@@ -36,8 +49,6 @@ sleep 1;
 push @ps, start(["node", "$path/syncfs.mjs", "fifos", $remote]);
 sleep 1;
 push @ps, start(["perl", "$path/syncfs-notifier.pl", "fifos", $remote]);
-sleep 1;
-push @ps, start(["perl", "$path/syncfs-secondary.pl", $remote]);
 sleep 1;
 push @ps, start(["perl", "$path/syncfs-lowerer.pl", $localn, $remote]);
 sleep 1;
@@ -66,14 +77,6 @@ sub terminate {
     warn "All file systems unmounted. Terminating.";
     exit 0;
 }
-
-$SIG{INT} = sub {
-    terminate;
-};
-
-$SIG{TERM} = sub {
-    terminate;
-};
 
 while (1) {
     sleep 1;

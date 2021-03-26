@@ -390,15 +390,18 @@ static int syncfs_setxattr(const char *path_str, const char *name,
   try {
     Path path(path_str);
     if (!strcmp(name, "syncfs.detach-for-lowering")) {
-      const char *detach_path = value;
-      int fd = open(detach_path, O_RDWR|O_CREAT, 0666);
-      fprintf (stderr, "detaching for lowering operation");
+      char *str = (char *)malloc(size + 1);
+      memcpy(str, value, size);
+      str[size] = 0;
+      int fd = open(str, O_RDWR|O_CREAT, 0666);
+      fprintf (stderr, "detaching for lowering operation, token %s\n",
+	       str);
       close(root_fd_reading);
       close(root_fd_writing);
       while (fd >= 0) {
 	close(fd);
 	sleep(1);
-	fd = open(detach_path, O_RDWR, 0666);
+	fd = open(str, O_RDWR, 0666);
       }
       root_fd_reading = open(root_path_reading, O_RDONLY|O_PATH);
       if (root_fd_reading < 0)
@@ -406,6 +409,8 @@ static int syncfs_setxattr(const char *path_str, const char *name,
       root_fd_writing = open(root_path_writing, O_RDONLY|O_PATH);
       if (root_fd_writing < 0)
 	abort();
+      fprintf (stderr, "reattached, token %s\n",
+	       str);
       return 0;
     }
     const char *prefix = "syncfs.user.";
@@ -661,7 +666,7 @@ static struct fuse_operations syncfs_operations = {
   .open = syncfs_open,
   .release = syncfs_release,
   .fsync = syncfs_fsync,
-  //.setxattr = syncfs_setxattr,
+  .setxattr = syncfs_setxattr,
   //.getxattr = syncfs_getxattr,
   //.listxattr = syncfs_listxattr,
   //.removexattr = syncfs_removexattr,
