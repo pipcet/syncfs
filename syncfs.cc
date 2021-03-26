@@ -652,6 +652,32 @@ static int syncfs_rename(const char *path_str, const char *path2_str,
   }
 }
 
+/* This is also exclusively for LLVM, but it's less obviously a bug
+   than its dependency on fallocate. */
+static int syncfs_truncate(const char *path_str, off_t size,
+			   struct fuse_file_info *)
+{
+  try {
+    Path path(path_str);
+    FIFO *fifo = (FIFO *)fuse_get_context()->private_data;
+    fifo->request("write", path, size);
+    int fd;
+    fd = ::openat(root_fd_writing, path.c_str(), O_RDWR);
+    if (ftruncate(fd, size) < 0)
+      throw Errno();
+    return 0;
+  } catch (Errno error) {
+    return -error.error;
+  }
+}
+
+static int syncfs_fallocate(const char *, int, off_t, off_t,
+			    struct fuse_file_info *)
+{
+  /* Sigh. LLVM breaks without this hack. */
+  return 0;
+}
+
 static struct fuse_operations syncfs_operations = {
   .getattr = syncfs_getattr,
   .readlink = syncfs_readlink,
@@ -663,6 +689,7 @@ static struct fuse_operations syncfs_operations = {
   .link = syncfs_link,
   .chmod = syncfs_chmod,
   .chown = syncfs_chown,
+  .truncate = syncfs_truncate,
   .open = syncfs_open,
   .release = syncfs_release,
   .fsync = syncfs_fsync,
@@ -676,6 +703,7 @@ static struct fuse_operations syncfs_operations = {
   .utimens = syncfs_utimens,
   .write_buf = syncfs_write_buf,
   .read_buf = syncfs_read_buf,
+  .fallocate = syncfs_fallocate,
 };
 
 int main(int argc, char **argv)
